@@ -6,41 +6,43 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - Crates: `tpt-press-{core,assets,tensors,logs,cli}`
 - On-disk formats: magic bytes + version field, unstable until 1.0
 - `.tpa` uses a fixed little-endian bounds-checked layout (e.g. `zerocopy`); logs/tensors headers use postcard/bincode 2 (not bincode 1.x)
-- Optional `age` encryption in core (flag + header field)
+- Optional `age` encryption in core, passphrase only for now (whole-stream age, no header flag; see Phase 1)
 - Tensor formats: safetensors, GGUF, ONNX, PyTorch pickle (restricted allowlist parser, never executes)
 - Logs: JSONL + CSV, simple filters; optional `strata` cargo feature (tpt-strata) for `query --sql`
 - CI: Windows/Linux/macOS, stable Rust, MSRV = stable minus ~2
 
 ## 0. Project setup & licensing
 - [ ] Check crates.io availability for all `tpt-press-*` names (reserve early)
-- [ ] Create GitHub repo under `tpt-solutions`
-- [ ] Add `LICENSE-MIT` and `LICENSE-APACHE` (copyright TPT Solutions)
-- [ ] Set `license = "MIT OR Apache-2.0"` in every Cargo.toml (workspace inheritance)
-- [ ] License section in README + contribution clause (dual-license contributions)
-- [ ] Workspace `Cargo.toml`, `rust-toolchain.toml`, `rust-version` (MSRV)
-- [ ] `rustfmt.toml`, clippy config, `#![forbid(unsafe_code)]` policy (documented exceptions: memmap2)
-- [ ] `cargo-deny` (licenses/advisories) and `cargo-audit` config
-- [ ] `.gitignore`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`
-- [ ] Create `crates/` skeleton and `tests/` dir
+- [x] GitHub remote configured (`origin` → `tpt-solutions/tpt-press`); repo existence on GitHub not verified by me
+- [x] Add `LICENSE-MIT` and `LICENSE-APACHE` (copyright TPT Solutions)
+- [x] Set `license = "MIT OR Apache-2.0"` in every Cargo.toml (workspace inheritance)
+- [x] License section in README + contribution clause (dual-license contributions)
+- [x] Workspace `Cargo.toml`, `rust-toolchain.toml`, `rust-version` (MSRV). Set to `1.96` as a placeholder; confirm against the real stable-minus-2 at release time
+- [x] `rustfmt.toml`, clippy lints (workspace), `#![forbid(unsafe_code)]` in core. Exceptions for memmap2 in assets are still to be decided in Phase 3
+- [x] `deny.toml` (licenses/advisories/bans/sources); `cargo deny check` passes. `cargo-audit` config not added (deny covers advisories)
+- [x] `.gitignore` (pre-existing), `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`
+- [x] Create `crates/` skeleton (5 crates, compiling). `tests/` dir created (README only, no tests yet)
 
 ## 1. Phase 1: Foundation (core + CLI skeleton)
 ### tpt-press-core
-- [ ] Error types (`thiserror`)
-- [ ] `Pressable` trait
-- [ ] `ArchiveFormat` trait (header, index, metadata)
-- [ ] Zstd wrapper (levels, dictionary support)
-- [ ] Parallel chunker (rayon): fixed-size chunks
+- [x] Error types (`thiserror`): `Io`, `Zstd`, `OutputTooLarge`, `InvalidArgument`
+- [x] `Pressable` trait (chunk size, level, overridable `split`)
+- [ ] `ArchiveFormat` trait (header, index, metadata). Format v1 header and frame layout are implemented in `format.rs`, but not yet behind a trait
+- [x] Zstd wrapper: levels 1..=22 validated. Dictionary support not yet
+- [x] Parallel chunker (rayon): fixed-size chunks, order preserved
 - [ ] Parallel chunker: content-defined chunking
-- [ ] Streaming Read -> parallel compress -> Write, bounded memory
-- [ ] Optional `age` encryption (feature flag, header flag/field)
-- [ ] Checksums/integrity per chunk
-- [ ] Limits for untrusted input (max sizes, allocation caps, decompression-bomb guard)
-- [ ] Unit + property tests
+- [x] Streaming Read -> parallel compress -> Write, bounded memory (`archive::pack` / `archive::unpack`, batches of 2 chunks per thread). The in-memory `compress_chunks` API still exists
+- [x] Passphrase encryption with `age` 0.12 (`crypto.rs`). Whole archive wrapped in an age stream (age encrypts in 64 KiB authenticated chunks), so the header flag planned earlier is not needed. Encrypted archives are detected by age's magic. Work factor on decrypt is capped at 20 (~1 GiB). Recipient-key mode not yet
+- [x] Tampering and wrong passphrase are detected. Wrong passphrase gives "decryption failed"; damage gives "archive is damaged or was altered"
+- [x] Checksums per chunk (CRC32 over compressed payload, verified before decompression)
+- [x] Decompression-bomb guard (per-chunk output cap) and chunk size limits. Archive-wide limits are still open
+- [x] Unit tests (codec, chunker, format header/frame). Integration tests in `crates/core/tests/archive.rs` (13: round-trips, corruption, truncation, limits). Property tests in `crates/core/tests/properties.rs` (3: round-trip, corruption, truncation)
+- [x] Truncated archives return `Error::Truncated` ("archive is truncated")
 ### tpt-press-cli (skeleton)
-- [ ] clap setup, subcommands `pack`, `unpack`, `inspect`, `query`
-- [ ] Generic `pack`/`unpack` using core only (better-zstd)
-- [ ] indicatif progress bars; console output
-- [ ] Integration test: round-trip
+- [x] clap setup with `pack`, `unpack` and `inspect`. `query` not yet
+- [x] Generic `pack`/`unpack` using core. Deviation from spec: no `<format>` argument yet, so `pack <input> <output>` and `unpack <archive> <output>`. `unpack` takes a file, not a directory
+- [x] indicatif progress bars on pack and unpack (hidden when not a terminal). Final output is one summary line
+- [x] CLI tests in `crates/cli/tests/cli.rs` (5): round-trip, corrupt and truncated archives leave no output, missing input, bad level
 
 ## 2. Phase 2: Logs (tpt-press-logs)
 - [ ] Archive format: magic/version/header/block index
@@ -79,7 +81,7 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - [ ] CLI `inspect`/`query` support for tensors
 
 ## 5. Cross-cutting
-- [ ] `inspect` command: metadata, ratios, chunk maps
+- [x] `inspect` command for the generic format: totals, ratio, chunk map (`--chunks`), checksums verified, payloads not decompressed. Domain metadata (tensors, logs) still to come
 - [ ] Format auto-detection in CLI
 - [ ] Fuzz targets (cargo-fuzz) for every parser
 - [ ] Memory-safety review of all `unsafe` (mmap)
