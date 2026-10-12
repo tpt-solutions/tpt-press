@@ -1,0 +1,114 @@
+Design Specification: tpt-press
+1. Executive Summary
+tpt-press is a modular Rust workspace providing domain-specific, high-performance compression and archiving solutions. Unlike generic tools (like zip or tar) that treat all data as a dumb stream of bytes, tpt-press provides specialized library crates that understand the structure of the data they are compressing. It includes a unified CLI application built on top of these libraries to provide a seamless developer experience.
+2. Goals and Non-Goals
+Goals
+Domain-Aware Compression: Achieve significantly better compression ratios and speeds by understanding data structures (e.g., tensor shapes in ML, JSON keys in logs, texture headers in games).
+Zero-Copy & Memory Efficiency: Utilize memory-mapping (memmap2) and streaming to ensure massive files (100GB+) can be processed with minimal RAM footprint.
+Fearless Concurrency: Leverage rayon to parallelize compression/decompression across all available CPU cores without data races.
+Library-First Architecture: The core logic must be exposed as clean, reusable library crates, with the CLI acting purely as a consumer of these libraries.
+Memory Safety: Guarantee zero buffer overflows or memory leaks, especially when parsing untrusted, user-uploaded archives.
+Non-Goals
+Replacing tar/zip for everyday use: We are not building a generic file archiver for standard documents.
+Building a GUI: The project is strictly CLI and library-focused.
+Custom Encryption: We will rely on existing, battle-tested cryptographic crates (like age or aes-gcm) if encryption is needed, rather than writing our own.
+3. Workspace Architecture
+The project is structured as a Cargo Workspace to enforce separation of concerns.
+
+tpt-press/
+├── Cargo.toml                 # Workspace root
+├── README.md
+├── crates/
+│   ├── core/                  # tpt-press-core: Shared traits, IO, chunking, error handling
+│   ├── assets/                # tpt-press-assets: Game dev asset packing (zero-copy, memmap)
+│   ├── tensors/               # tpt-press-tensors: ML model archiving (sharded, tensor-aware)
+│   ├── logs/                  # tpt-press-logs: Data/Log archiving (semantic, indexed)
+│   └── cli/                   # tpt-press-cli: The binary application
+└── tests/                     # Integration tests spanning multiple crates
+
+4. Crate Design & Technical Details
+4.1. tpt-press-core (The Foundation)
+This crate contains no domain-specific logic. It defines the traits and utilities that all domain crates must implement.
+Key Traits:
+Pressable: Defines how a specific data type is chunked and compressed.
+ArchiveFormat: Defines the file header, index structure, and metadata layout.
+Core Utilities:
+Parallel Chunker: A utility using rayon to split a Read stream into fixed or content-defined chunks, compress them in parallel, and yield them to a Write stream.
+Zstd Wrapper: A unified, safe wrapper around the zstd crate, pre-configured with optimal dictionary and compression levels for the workspace.
+Dependencies: zstd, rayon, thiserror, serde.
+4.2. tpt-press-assets (Game Development Domain)
+Optimized for game engines needing to load thousands of small files (textures, meshes, audio) instantly.
+Key Features:
+Memory-Mapped Archives: Uses memmap2 to map the .tpa (tpt-press asset) file directly to virtual memory. The game engine can read textures via pointers without loading them into RAM.
+Alignment-Aware Packing: Aligns compressed chunks to page boundaries (e.g., 4KB) to optimize OS memory paging and GPU DMA transfers.
+No-Overhead Index: A flat, binary B-Tree index at the end of the file for 
+O
+(
+log
+⁡
+n
+)
+O(logn) asset lookups.
+4.3. tpt-press-tensors (Machine Learning Domain)
+Optimized for large AI model weights (e.g., .safetensors, .gguf alternatives).
+Key Features:
+Tensor-Aware Chunking: Instead of chunking by raw bytes, it chunks by tensor boundaries. This prevents compression dictionaries from being corrupted by crossing the boundary of two unrelated weight matrices.
+Async Sharded Streaming: Uses tokio to allow streaming a 100GB model over a network, decompressing and loading it directly into GPU VRAM chunk-by-chunk.
+Metadata Extraction: Allows reading the model's config (layers, dimensions, dtypes) without decompressing the actual weights.
+4.4. tpt-press-logs (Data & Logging Domain)
+Optimized for JSON, CSV, and time-series log data.
+Key Features:
+Semantic Dictionary Training: Automatically samples the first 10% of a log file to train a custom Zstandard dictionary, capturing repeating JSON keys and log formats, boosting compression by up to 50%.
+Columnar Extraction: Allows the user to extract only the "timestamp" and "error_level" columns from a compressed CSV without decompressing the entire payload.
+Block-Level Indexing: Indexes the archive by time-ranges, allowing queries like "Get all logs between 12:00 and 13:00" by only decompressing the relevant blocks.
+4.5. tpt-press-cli (The Application)
+The user-facing binary. It relies entirely on the library crates.
+Commands:
+tpt-press pack <format> <input> <output> (e.g., tpt-press pack assets ./textures ./game.tpa)
+tpt-press unpack <archive> <output_dir>
+tpt-press inspect <archive> (Prints metadata, compression ratios, and chunk maps without extracting).
+tpt-press query <archive> <filter> (Specific to logs/tensors).
+UX Features: Beautiful progress bars using indicative, rich terminal output using ratatui or console, and automatic format detection based on file extensions.
+5. Technical Stack & Key Dependencies
+Crate
+Purpose
+zstd
+The primary compression algorithm (best speed/ratio tradeoff).
+rayon
+Data parallelism for multi-core compression.
+tokio
+Async runtime for network streaming (specifically for the tensors crate).
+memmap2
+Zero-copy memory mapping (specifically for the assets crate).
+clap
+CLI argument parsing and auto-generated help menus.
+serde / bincode
+Fast, zero-allocation serialization for archive headers and indexes.
+thiserror
+Ergonomic, typed error handling for the libraries.
+indicatif
+Progress bars and spinners for the CLI.
+6. Development Roadmap
+Phase 1: The Foundation (Weeks 1-2)
+Initialize the Cargo workspace.
+Build tpt-press-core: Implement the Pressable trait, parallel chunking with rayon, and the Zstd wrapper.
+Build the tpt-press-cli skeleton with clap. Implement a basic pack and unpack command that just uses the core generic compressor (acting like a better zstd).
+Phase 2: First Specialist Domain - Logs (Weeks 3-4)
+Build tpt-press-logs.
+Implement the on-the-fly Zstd dictionary training for JSON/CSV.
+Implement the block-level time index.
+Add tpt-press query to the CLI to prove the indexing works without full decompression.
+Phase 3: Second Specialist Domain - Assets (Weeks 5-6)
+Build tpt-press-assets.
+Implement the memory-mapped (.tpa) file format.
+Write benchmark tests proving zero-copy read speeds compared to standard ZIP.
+Add format detection to the CLI.
+Phase 4: Third Specialist Domain - Tensors (Weeks 7-8)
+Build tpt-press-tensors.
+Implement tensor-boundary chunking.
+Integrate tokio for async sharded streaming.
+Write integration tests simulating loading a "model" directly into a mock GPU buffer.
+Phase 5: Polish and Open Source (Week 9+)
+Write comprehensive README.md with benchmarks comparing tpt-press to tar.gz, zip, and standard zstd.
+Set up GitHub Actions for CI/CD (formatting, clippy, tests).
+Publish the library crates to crates.io.

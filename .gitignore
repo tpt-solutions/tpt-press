@@ -1,0 +1,23 @@
+# Rust / Cargo
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Large/binary test fixtures and output
+*.tpt
+*.tptpress
+
+# Environment
+.env
+.env.*
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/settings.local.json
