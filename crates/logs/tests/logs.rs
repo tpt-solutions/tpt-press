@@ -71,9 +71,61 @@ fn jsonl_round_trips_every_record() {
     let archive = pack_bytes(&input, &small_blocks());
     let (lines, stats) = run_query(&archive, &Query::default()).unwrap();
 
-    let expected: Vec<String> = (0..5000).map(jsonl_line).collect();
-    assert_eq!(lines, expected);
+    // Whole records come back with the same values. Keys are sorted, so the
+    // text can differ from the input, and the values are compared instead.
+    let expected: Vec<serde_json::Value> = (0..5000)
+        .map(|i| serde_json::from_str(&jsonl_line(i)).unwrap())
+        .collect();
+    let actual: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(actual, expected);
     assert_eq!(stats.records_matched, 5000);
+}
+
+#[test]
+fn invalid_json_record_is_rejected_with_its_line() {
+    let input = b"{\"timestamp\":\"2026-10-13T00:00:01Z\"}\n[1,2,3]\n";
+    let mut out = Vec::new();
+    match pack(
+        Cursor::new(input.as_slice()),
+        &mut out,
+        &PackOptions::default(),
+    ) {
+        Err(Error::InvalidRecord(detail)) => assert!(detail.contains("line 2"), "{detail}"),
+        other => panic!("expected an invalid record error, got {other:?}"),
+    }
+}
+
+#[test]
+fn column_query_decompresses_only_the_columns_it_needs() {
+    let archive = pack_bytes(&jsonl_input(2000), &small_blocks());
+
+    // Without a time range, only the requested column is read.
+    let q = Query {
+        columns: Some(vec!["level".to_owned()]),
+        ..Query::default()
+    };
+    let (_, stats) = run_query(&archive, &q).unwrap();
+    assert_eq!(stats.columns_read, stats.blocks_read);
+
+    // With a time range, the timestamp column is read as well.
+    let q = Query {
+        from: Some(at(0)),
+        to: Some(at(100)),
+        columns: Some(vec!["level".to_owned()]),
+    };
+    let (_, stats) = run_query(&archive, &q).unwrap();
+    assert_eq!(stats.columns_read, stats.blocks_read * 2);
+}
+
+#[test]
+fn whole_record_query_reads_every_column() {
+    let archive = pack_bytes(&jsonl_input(2000), &small_blocks());
+    let (_, stats) = run_query(&archive, &Query::default()).unwrap();
+    // Each block has three columns: timestamp, level and msg.
+    assert_eq!(stats.columns_read, stats.blocks_read * 3);
 }
 
 #[test]
@@ -95,11 +147,15 @@ fn time_range_returns_only_matching_records() {
     };
     let (lines, stats) = run_query(&archive, &q).unwrap();
 
-    let expected: Vec<String> = (0..5000)
+    let expected: Vec<serde_json::Value> = (0..5000)
         .filter(|i| (1000..=1500).contains(&(i * STEP)))
-        .map(jsonl_line)
+        .map(|i| serde_json::from_str(&jsonl_line(i)).unwrap())
         .collect();
-    assert_eq!(lines, expected);
+    let actual: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(actual, expected);
     assert_eq!(stats.records_matched, expected.len() as u64);
 }
 

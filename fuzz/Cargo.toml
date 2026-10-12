@@ -1,0 +1,45 @@
+[package]
+name = "tpt-press-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tpt-press-core = { path = "../crates/core" }
+tpt-press-logs = { path = "../crates/logs" }
+tpt-press-assets = { path = "../crates/assets" }
+tpt-press-tensors = { path = "../crates/tensors" }
+
+[[bin]]
+name = "core_unpack"
+path = "fuzz_targets/core_unpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "logs_query"
+path = "fuzz_targets/logs_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tensors_read"
+path = "fuzz_targets/tensors_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "assets_open"
+path = "fuzz_targets/assets_open.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

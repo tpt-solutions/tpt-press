@@ -1,23 +1,20 @@
-//! On-disk layout of a logs archive, version 1.
+//! On-disk layout of a logs archive, version 2.
 //!
 //! ```text
 //! header: magic "TPLG" | version u16 | format u8 | reserved u8
 //!         | timestamp_field (u16 length + bytes)
 //!         | dictionary      (u32 length + bytes, empty if none)
 //!         | csv_header      (u32 length + bytes, empty for JSONL)
-//! block*: compressed_len u32 | crc32 u32 | zstd payload
-//!         payload = records, each followed by '\n'
+//! block*: payload_len u32 | crc32 u32 | payload
+//!         payload: column-oriented, see `block.rs`
 //! index:  count u32 | entry * count            (see `Entry`)
 //! footer: index_offset u64 | index_len u32 | index_crc32 u32 | magic "TPLX"
 //! ```
 //!
-//! Each block's CRC32 covers its compressed payload. Blocks are compressed with
-//! the archive's dictionary when it has one. The index lets a query find the
+//! Each block's CRC32 covers its whole payload. The index lets a query find the
 //! blocks that overlap a time range without reading the others.
 
 use std::io::{Read, Seek, SeekFrom, Write};
-
-use tpt_press_core::codec;
 
 use crate::error::{map_io, Error, Result};
 
@@ -28,7 +25,7 @@ pub const MAGIC: [u8; 4] = *b"TPLG";
 pub const FOOTER_MAGIC: [u8; 4] = *b"TPLX";
 
 /// Version written by this build and the only one it reads.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 /// Size of the footer in bytes.
 pub const FOOTER_LEN: u64 = 20;
@@ -38,6 +35,10 @@ pub const FRAME_HEADER_LEN: u64 = 8;
 
 /// Size of one encoded index entry in bytes.
 pub const ENTRY_LEN: usize = 33;
+
+/// Largest block payload accepted when reading. Column streams never expand
+/// past their raw size by much, so twice the uncompressed limit is generous.
+pub const MAX_PAYLOAD_LEN: u64 = 2 * MAX_BLOCK_OUTPUT as u64;
 
 /// Largest uncompressed block accepted when reading.
 pub const MAX_BLOCK_OUTPUT: usize = 128 * 1024 * 1024;
@@ -176,8 +177,12 @@ pub fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> Result<u64> {
     Ok(buf.len() as u64)
 }
 
-/// Reads and checks the block that `entry` points to, and returns its records.
-pub fn read_block<R: Read + Seek>(r: &mut R, entry: &Entry, dictionary: &[u8]) -> Result<Vec<u8>> {
+/// Reads the block that `entry` points to and checks its checksum. Returns the payload.
+pub fn read_payload<R: Read + Seek>(r: &mut R, entry: &Entry) -> Result<Vec<u8>> {
+    // Checked before anything is allocated, so a damaged index cannot force a huge buffer.
+    if u64::from(entry.compressed_len) > MAX_PAYLOAD_LEN {
+        return Err(Error::Corrupt("block declares an implausible size"));
+    }
     r.seek(SeekFrom::Start(entry.offset)).map_err(map_io)?;
     let len = read_u32(r)?;
     let crc = read_u32(r)?;
@@ -188,28 +193,7 @@ pub fn read_block<R: Read + Seek>(r: &mut R, entry: &Entry, dictionary: &[u8]) -
     if crc32fast::hash(&payload) != crc {
         return Err(Error::Corrupt("block checksum mismatch"));
     }
-    decompress_block(&payload, dictionary)
-}
-
-/// Compresses a block's records, with the dictionary if there is one.
-pub fn compress_block(data: &[u8], level: i32, dictionary: &[u8]) -> Result<Vec<u8>> {
-    if dictionary.is_empty() {
-        Ok(codec::compress(data, level)?)
-    } else {
-        Ok(codec::compress_with_dict(data, level, dictionary)?)
-    }
-}
-
-fn decompress_block(payload: &[u8], dictionary: &[u8]) -> Result<Vec<u8>> {
-    if dictionary.is_empty() {
-        Ok(codec::decompress(payload, MAX_BLOCK_OUTPUT)?)
-    } else {
-        Ok(codec::decompress_with_dict(
-            payload,
-            MAX_BLOCK_OUTPUT,
-            dictionary,
-        )?)
-    }
+    Ok(payload)
 }
 
 /// Encodes the index and the footer that points to it. Returns the bytes to

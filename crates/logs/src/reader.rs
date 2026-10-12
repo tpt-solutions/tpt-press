@@ -2,6 +2,7 @@
 
 use std::io::{Read, Seek, SeekFrom, Write};
 
+use crate::block::{self, Directory};
 use crate::error::{Error, Result};
 use crate::format::{self, Entry};
 use crate::schema::Schema;
@@ -13,7 +14,7 @@ pub struct Query {
     pub from: Option<i64>,
     /// Latest timestamp to include, in Unix nanoseconds. `None` means no upper bound.
     pub to: Option<i64>,
-    /// Columns to output, in order. `None` outputs each record unchanged.
+    /// Columns to output, in order. `None` outputs whole records.
     pub columns: Option<Vec<String>>,
 }
 
@@ -22,9 +23,11 @@ pub struct Query {
 pub struct QueryStats {
     /// Blocks in the archive.
     pub blocks_total: u64,
-    /// Blocks that were read and decompressed. The rest were skipped
-    /// using the index.
+    /// Blocks that were read. The rest were skipped using the index.
     pub blocks_read: u64,
+    /// Column streams that were decompressed. Only the columns a query needs
+    /// are decompressed.
+    pub columns_read: u64,
     /// Records written to the output.
     pub records_matched: u64,
 }
@@ -32,8 +35,10 @@ pub struct QueryStats {
 /// Writes the records that match `query` to `output`, one per line.
 ///
 /// Blocks whose time range cannot overlap the query are skipped without being
-/// read. Records without a parseable timestamp are always included. Output
-/// records are in archive order.
+/// read. Within a block, only the columns the query needs are decompressed.
+/// Those are the requested columns, plus the timestamp column if the query has
+/// a time range. Records without a parseable timestamp are always included.
+/// Output records are in archive order.
 pub fn query<R: Read + Seek, W: Write>(
     mut input: R,
     mut output: W,
@@ -61,20 +66,60 @@ pub fn query<R: Read + Seek, W: Write>(
 
     for entry in entries.iter().filter(|e| overlaps(e, query, filter_time)) {
         stats.blocks_read += 1;
-        let data = format::read_block(&mut input, entry, &header.dictionary)?;
+        let payload = format::read_payload(&mut input, entry)?;
+        let dir = block::decode_directory(&payload)?;
+        check_block(entry, &dir)?;
 
-        for line in data.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+        let output_names = output_names(query, &dir);
+        let mut wanted: Vec<&str> = output_names.iter().map(String::as_str).collect();
+        if filter_time {
+            wanted.push(schema.timestamp_field());
+        }
+
+        // Decompress each wanted column once, and keep it as cells per record.
+        let mut decoded: Vec<(&str, Vec<Vec<u8>>)> = Vec::new();
+        for name in wanted {
+            if decoded.iter().any(|(n, _)| *n == name) {
+                continue;
+            }
+            let Some(column) = dir.columns.iter().find(|c| c.name == name) else {
+                continue;
+            };
+            let raw = block::decode_column(&payload, column, &header.dictionary)?;
+            stats.columns_read += 1;
+            let cells = split_cells(&raw)?;
+            if cells.len() != dir.records as usize {
+                return Err(Error::Corrupt("column has the wrong number of cells"));
+            }
+            decoded.push((name, cells));
+        }
+
+        let timestamp_cells = decoded
+            .iter()
+            .find(|(n, _)| *n == schema.timestamp_field())
+            .map(|(_, cells)| cells);
+
+        for i in 0..dir.records as usize {
             if filter_time {
-                if let Some(t) = schema.timestamp(line) {
+                let timestamp = timestamp_cells.and_then(|cells| schema.cell_timestamp(&cells[i]));
+                if let Some(t) = timestamp {
                     if !in_range(t, query) {
                         continue;
                     }
                 }
             }
-            match &query.columns {
-                Some(columns) => output.write_all(&schema.project(line, columns)?)?,
-                None => output.write_all(line)?,
-            }
+
+            let aligned: Vec<Option<&[u8]>> = output_names
+                .iter()
+                .map(|name| {
+                    decoded
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, cells)| cells[i].as_slice())
+                })
+                .collect();
+            let row = schema.render(&output_names, &aligned, query.columns.is_none())?;
+            output.write_all(&row)?;
             output.write_all(b"\n")?;
             stats.records_matched += 1;
         }
@@ -82,6 +127,35 @@ pub fn query<R: Read + Seek, W: Write>(
 
     output.flush()?;
     Ok(stats)
+}
+
+/// The columns to output: the requested ones, or every column in the block.
+/// The block stores CSV columns in header order, so whole CSV records keep their order.
+fn output_names(query: &Query, dir: &Directory) -> Vec<String> {
+    match &query.columns {
+        Some(columns) => columns.clone(),
+        None => dir.columns.iter().map(|c| c.name.clone()).collect(),
+    }
+}
+
+/// Splits a raw column stream into its cells. Every cell is followed by `\n`,
+/// so an empty stream holds no cells.
+fn split_cells(raw: &[u8]) -> Result<Vec<Vec<u8>>> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let body = raw
+        .strip_suffix(b"\n")
+        .ok_or(Error::Corrupt("column stream is not newline-terminated"))?;
+    Ok(body.split(|&b| b == b'\n').map(<[u8]>::to_vec).collect())
+}
+
+/// Checks that a block's directory agrees with the index.
+fn check_block(entry: &Entry, dir: &Directory) -> Result<()> {
+    if dir.records != entry.records {
+        return Err(Error::Corrupt("block record count does not match index"));
+    }
+    Ok(())
 }
 
 /// Whether a block could hold a record in the query's range.

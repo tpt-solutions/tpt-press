@@ -1,10 +1,11 @@
-//! Packs JSON Lines or CSV logs into a time-indexed archive.
+//! Packs JSON Lines or CSV logs into a time-indexed, column-oriented archive.
 
 use std::io::{self, BufRead, Seek, SeekFrom, Write};
 
 use rayon::prelude::*;
 use tpt_press_core::codec;
 
+use crate::block;
 use crate::error::{Error, Result};
 use crate::format::{self, Entry, Format, Header};
 use crate::schema::Schema;
@@ -21,8 +22,8 @@ pub const MAX_RECORD_SIZE: usize = 64 * 1024 * 1024;
 /// Largest dictionary trained from the sample.
 const DICTIONARY_SIZE: usize = 64 * 1024;
 
-/// Fewest sample records needed before a dictionary is trained.
-const MIN_SAMPLE_RECORDS: usize = 8;
+/// Fewest sample cells needed before a dictionary is trained.
+const MIN_SAMPLE_CELLS: usize = 8;
 
 /// Fraction of the input, in percent, used as the dictionary sample.
 const SAMPLE_PERCENT: u64 = 10;
@@ -32,7 +33,7 @@ const SAMPLE_PERCENT: u64 = 10;
 pub struct PackOptions {
     /// Record format of the input.
     pub format: Format,
-    /// Field (JSONL) or column (CSV) holding the RFC 3339 timestamp.
+    /// Field (JSON) or column (CSV) holding the RFC 3339 timestamp.
     pub timestamp_field: String,
     /// Uncompressed size at which a block is closed, in bytes.
     pub block_size: usize,
@@ -69,9 +70,10 @@ pub struct Stats {
 /// Packs `input` into a logs archive written to `output`.
 ///
 /// The input must be seekable, because the dictionary is trained from its
-/// first 10% before the records are read again. Blank lines are dropped, and
-/// CRLF line endings are accepted. Records must be single lines, so a CSV
-/// field cannot contain a newline.
+/// first 10% before the records are read again. Each record is split into
+/// columns. JSON input must be one object per line. CSV rows must match the
+/// header's field count, and fields cannot contain newlines. Blank lines are
+/// dropped, and CRLF is accepted.
 pub fn pack<R: BufRead + Seek, W: Write>(
     mut input: R,
     mut output: W,
@@ -89,7 +91,7 @@ pub fn pack<R: BufRead + Seek, W: Write>(
     let data_start = input.stream_position()?;
     let schema = Schema::new(opts.format, &opts.timestamp_field, &csv_header)?;
 
-    let dictionary = train_dictionary(&mut input, input_bytes, data_start)?;
+    let dictionary = train_dictionary(&mut input, &schema, input_bytes, data_start)?;
 
     let header = Header {
         format: opts.format,
@@ -106,11 +108,12 @@ pub fn pack<R: BufRead + Seek, W: Write>(
 
     let batch_len = batch_len();
     let mut entries = Vec::new();
+    let mut line_no = 0u64;
     loop {
         let mut batch = Vec::with_capacity(batch_len);
         while batch.len() < batch_len {
-            match next_block(&mut input, &schema, opts.block_size)? {
-                Some(block) => batch.push(block),
+            match next_block(&mut input, &schema, opts.block_size, &mut line_no)? {
+                Some(rows) => batch.push(rows),
                 None => break,
             }
         }
@@ -118,23 +121,28 @@ pub fn pack<R: BufRead + Seek, W: Write>(
             break;
         }
 
-        let packed: Vec<Vec<u8>> = batch
+        let packed: Vec<(u32, Vec<u8>)> = batch
             .par_iter()
-            .map(|block| format::compress_block(&block.data, opts.level, &dictionary))
+            .map(|rows| -> Result<(u32, Vec<u8>)> {
+                let columns = build_columns(&schema, &rows.records);
+                let payload =
+                    block::encode(rows.records.len() as u32, &columns, opts.level, &dictionary)?;
+                Ok((rows.records.len() as u32, payload))
+            })
             .collect::<Result<_>>()?;
 
-        for (block, payload) in batch.iter().zip(&packed) {
+        for (rows, (count, payload)) in batch.iter().zip(&packed) {
             entries.push(Entry {
                 offset,
                 compressed_len: payload.len() as u32,
-                records: block.records,
-                has_time: block.min.is_some(),
-                untimed: block.untimed,
-                min_time: block.min.unwrap_or(0),
-                max_time: block.max.unwrap_or(0),
+                records: *count,
+                has_time: rows.min.is_some(),
+                untimed: rows.untimed,
+                min_time: rows.min.unwrap_or(0),
+                max_time: rows.max.unwrap_or(0),
             });
             offset += format::write_frame(&mut output, payload)?;
-            stats.records += u64::from(block.records);
+            stats.records += u64::from(*count);
             stats.blocks += 1;
         }
     }
@@ -158,39 +166,51 @@ fn validate(opts: &PackOptions) -> Result<()> {
     Ok(())
 }
 
-/// Trains a dictionary from the records in the first 10% of the input, then
-/// seeks back to the first record. Returns no dictionary if the sample is too
-/// small for zstd to train on.
+/// Trains a dictionary from the cells of the records in the first 10% of the
+/// input, then seeks back to the first record. Returns no dictionary if the
+/// sample is too small for zstd to train on. Lines that fail to parse are
+/// skipped here. The main pass reports them.
 fn train_dictionary<R: BufRead + Seek>(
     input: &mut R,
+    schema: &Schema,
     input_bytes: u64,
     data_start: u64,
 ) -> Result<Vec<u8>> {
     let limit = input_bytes * SAMPLE_PERCENT / 100;
-    let mut samples = Vec::new();
+    let mut samples: Vec<Vec<u8>> = Vec::new();
     let mut consumed = 0u64;
     while consumed < limit {
         let Some(line) = read_line(input)? else {
             break;
         };
         consumed += line.len() as u64 + 1;
-        if !line.is_empty() {
-            samples.push(line);
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(cells) = schema.cells(&line) {
+            samples.extend(
+                cells
+                    .into_iter()
+                    .map(|(_, cell)| cell)
+                    .filter(|c| !c.is_empty()),
+            );
         }
     }
     input.seek(SeekFrom::Start(data_start))?;
 
-    if samples.len() < MIN_SAMPLE_RECORDS {
+    if samples.len() < MIN_SAMPLE_CELLS {
         return Ok(Vec::new());
     }
     Ok(codec::train_dictionary(&samples, DICTIONARY_SIZE).unwrap_or_default())
 }
 
-/// One block being assembled, before compression.
+/// Records gathered for one block, before it is encoded.
 #[derive(Default)]
-struct Block {
-    data: Vec<u8>,
-    records: u32,
+struct Rows {
+    /// Each record as `(column, cell)` pairs.
+    records: Vec<Vec<(String, Vec<u8>)>>,
+    /// Bytes read, used to decide when the block is full.
+    bytes: usize,
     min: Option<i64>,
     max: Option<i64>,
     untimed: bool,
@@ -201,30 +221,62 @@ fn next_block<R: BufRead>(
     input: &mut R,
     schema: &Schema,
     block_size: usize,
-) -> Result<Option<Block>> {
-    let mut block = Block::default();
-    while block.data.len() < block_size {
+    line_no: &mut u64,
+) -> Result<Option<Rows>> {
+    let mut rows = Rows::default();
+    while rows.bytes < block_size {
         let Some(line) = read_line(input)? else {
             break;
         };
+        *line_no += 1;
         if line.is_empty() {
             continue;
         }
         if line.len() > MAX_RECORD_SIZE {
             return Err(Error::RecordTooLarge(line.len(), MAX_RECORD_SIZE));
         }
-        match schema.timestamp(&line) {
-            Some(t) => {
-                block.min = Some(block.min.map_or(t, |m| m.min(t)));
-                block.max = Some(block.max.map_or(t, |m| m.max(t)));
+
+        let cells = schema.cells(&line).map_err(|e| match e {
+            Error::InvalidRecord(detail) => {
+                Error::InvalidRecord(format!("line {line_no}: {detail}"))
             }
-            None => block.untimed = true,
+            other => other,
+        })?;
+        let timestamp = cells
+            .iter()
+            .find(|(name, _)| name == schema.timestamp_field())
+            .and_then(|(_, cell)| schema.cell_timestamp(cell));
+        match timestamp {
+            Some(t) => {
+                rows.min = Some(rows.min.map_or(t, |m| m.min(t)));
+                rows.max = Some(rows.max.map_or(t, |m| m.max(t)));
+            }
+            None => rows.untimed = true,
         }
-        block.data.extend_from_slice(&line);
-        block.data.push(b'\n');
-        block.records += 1;
+
+        rows.bytes += line.len() + 1;
+        rows.records.push(cells);
     }
-    Ok((block.records > 0).then_some(block))
+    Ok((!rows.records.is_empty()).then_some(rows))
+}
+
+/// Turns a block's records into one raw stream per column. Each stream has one
+/// cell per record, and each cell ends with `\n`.
+fn build_columns(schema: &Schema, records: &[Vec<(String, Vec<u8>)>]) -> Vec<(String, Vec<u8>)> {
+    let names = schema.block_columns(records);
+    names
+        .into_iter()
+        .map(|name| {
+            let mut stream = Vec::new();
+            for record in records {
+                if let Some((_, cell)) = record.iter().find(|(n, _)| *n == name) {
+                    stream.extend_from_slice(cell);
+                }
+                stream.push(b'\n');
+            }
+            (name, stream)
+        })
+        .collect()
 }
 
 /// Reads one line without its line ending. Returns `None` at end of input.

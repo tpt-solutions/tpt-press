@@ -21,3 +21,8 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Fuzzing output
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/target/

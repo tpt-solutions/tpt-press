@@ -1,4 +1,6 @@
-//! Reads timestamps from records and projects columns out of them.
+//! Splits records into column cells, and turns cells back into records.
+
+use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 use time::format_description::well_known::Rfc3339;
@@ -7,47 +9,49 @@ use time::OffsetDateTime;
 use crate::error::{Error, Result};
 use crate::format::Format;
 
+const EMPTY: &[u8] = b"";
+
 /// Knows how to read records of one archive's format.
 #[derive(Debug, Clone)]
 pub struct Schema {
     format: Format,
     timestamp_field: String,
-    columns: Vec<String>,
-    timestamp_index: Option<usize>,
+    /// CSV header names, in order. Empty for JSONL.
+    header: Vec<String>,
 }
 
 impl Schema {
     /// Builds the schema. For CSV, `csv_header` must be the header line.
     pub fn new(format: Format, timestamp_field: &str, csv_header: &[u8]) -> Result<Self> {
-        match format {
-            Format::Jsonl => Ok(Self {
-                format,
-                timestamp_field: timestamp_field.to_owned(),
-                columns: Vec::new(),
-                timestamp_index: None,
-            }),
+        let header = match format {
+            Format::Jsonl => Vec::new(),
             Format::Csv => {
                 if csv_header.is_empty() {
                     return Err(Error::MissingHeader);
                 }
-                let columns = parse_csv_fields(csv_header).ok_or(Error::MissingHeader)?;
-                let timestamp_index = columns.iter().position(|c| c == timestamp_field);
-                Ok(Self {
-                    format,
-                    timestamp_field: timestamp_field.to_owned(),
-                    columns,
-                    timestamp_index,
-                })
+                let names = parse_csv_fields(csv_header).ok_or(Error::MissingHeader)?;
+                let unique: BTreeSet<&String> = names.iter().collect();
+                if unique.len() != names.len() {
+                    return Err(Error::InvalidRecord(
+                        "duplicate column name in CSV header".to_owned(),
+                    ));
+                }
+                names
             }
-        }
+        };
+        Ok(Self {
+            format,
+            timestamp_field: timestamp_field.to_owned(),
+            header,
+        })
     }
 
     /// Checks that every requested column exists. JSONL keys are not known
-    /// in advance, so any name is accepted there and a missing key becomes `null`.
+    /// in advance, so any name is accepted there, and a missing key becomes `null`.
     pub fn validate_columns(&self, requested: &[String]) -> Result<()> {
         if self.format == Format::Csv {
             for name in requested {
-                if !self.columns.contains(name) {
+                if !self.header.contains(name) {
                     return Err(Error::UnknownColumn(name.clone()));
                 }
             }
@@ -55,54 +59,127 @@ impl Schema {
         Ok(())
     }
 
-    /// The record's timestamp in Unix nanoseconds, or `None` if it has none
-    /// or it is not RFC 3339.
-    pub fn timestamp(&self, line: &[u8]) -> Option<i64> {
-        match self.format {
-            Format::Jsonl => {
-                let value: Value = serde_json::from_slice(line).ok()?;
-                parse_time(value.get(&self.timestamp_field)?.as_str()?)
-            }
-            Format::Csv => {
-                let fields = parse_csv_fields(line)?;
-                parse_time(fields.get(self.timestamp_index?)?)
-            }
-        }
-    }
-
-    /// Returns the record with only `columns`, in that order, without a
-    /// trailing newline. Columns must have been validated first.
-    pub fn project(&self, line: &[u8], columns: &[String]) -> Result<Vec<u8>> {
+    /// Splits one record into `(column, cell)` pairs. Raises an error if the record
+    /// does not fit the format.
+    ///
+    /// For JSON, each cell is the value's JSON text, and absent keys have no
+    /// pair. For CSV, each cell is the field text, and every header column has one.
+    pub fn cells(&self, line: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         match self.format {
             Format::Jsonl => {
                 let value: Value = serde_json::from_slice(line)
                     .map_err(|e| Error::InvalidRecord(e.to_string()))?;
+                let Value::Object(map) = value else {
+                    return Err(Error::InvalidRecord(
+                        "record is not a JSON object".to_owned(),
+                    ));
+                };
+                map.iter()
+                    .map(|(k, v)| {
+                        serde_json::to_vec(v)
+                            .map(|cell| (k.clone(), cell))
+                            .map_err(|e| Error::InvalidRecord(e.to_string()))
+                    })
+                    .collect()
+            }
+            Format::Csv => {
+                let fields = parse_csv_fields(line)
+                    .ok_or_else(|| Error::InvalidRecord("bad CSV row".to_owned()))?;
+                if fields.len() != self.header.len() {
+                    return Err(Error::InvalidRecord(format!(
+                        "row has {} fields but the header has {}",
+                        fields.len(),
+                        self.header.len()
+                    )));
+                }
+                Ok(self
+                    .header
+                    .iter()
+                    .cloned()
+                    .zip(fields.into_iter().map(String::into_bytes))
+                    .collect())
+            }
+        }
+    }
+
+    /// Column names for a block. CSV keeps header order. JSON uses the sorted
+    /// union of keys across the block's records.
+    pub fn block_columns(&self, rows: &[Vec<(String, Vec<u8>)>]) -> Vec<String> {
+        match self.format {
+            Format::Csv => self.header.clone(),
+            Format::Jsonl => rows
+                .iter()
+                .flatten()
+                .map(|(k, _)| k.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// The timestamp in a cell of the timestamp column, in Unix nanoseconds.
+    /// `None` if the cell is empty, or is not RFC 3339.
+    pub fn cell_timestamp(&self, cell: &[u8]) -> Option<i64> {
+        match self.format {
+            Format::Jsonl => {
+                if cell.is_empty() {
+                    return None;
+                }
+                let value: Value = serde_json::from_slice(cell).ok()?;
+                parse_time(value.as_str()?)
+            }
+            Format::Csv => parse_time(std::str::from_utf8(cell).ok()?),
+        }
+    }
+
+    /// The name of the column that holds timestamps.
+    pub fn timestamp_field(&self) -> &str {
+        &self.timestamp_field
+    }
+
+    /// Builds one output record from aligned cells. `cells[i]` is the cell for
+    /// `names[i]`, or `None` if the block has no such column. With `omit_absent`,
+    /// absent keys are left out. Otherwise they appear as `null`. The result has
+    /// no trailing newline.
+    pub fn render(
+        &self,
+        names: &[String],
+        cells: &[Option<&[u8]>],
+        omit_absent: bool,
+    ) -> Result<Vec<u8>> {
+        match self.format {
+            Format::Jsonl => {
                 let mut out = Map::new();
-                for name in columns {
-                    let field = value.get(name).cloned().unwrap_or(Value::Null);
-                    out.insert(name.clone(), field);
+                for (name, cell) in names.iter().zip(cells) {
+                    match cell {
+                        Some(cell) if !cell.is_empty() => {
+                            let value: Value = serde_json::from_slice(cell)
+                                .map_err(|_| Error::Corrupt("column cell is not valid JSON"))?;
+                            out.insert(name.clone(), value);
+                        }
+                        _ if !omit_absent => {
+                            out.insert(name.clone(), Value::Null);
+                        }
+                        _ => {}
+                    }
                 }
                 serde_json::to_vec(&Value::Object(out))
                     .map_err(|e| Error::InvalidRecord(e.to_string()))
             }
             Format::Csv => {
-                let fields = parse_csv_fields(line)
-                    .ok_or_else(|| Error::InvalidRecord("bad CSV row".to_owned()))?;
-                let mut selected: Vec<&str> = Vec::with_capacity(columns.len());
-                for name in columns {
-                    let index = self
-                        .columns
-                        .iter()
-                        .position(|c| c == name)
-                        .ok_or_else(|| Error::UnknownColumn(name.clone()))?;
-                    selected.push(fields.get(index).map_or("", String::as_str));
-                }
                 let mut writer = csv::WriterBuilder::new()
                     .has_headers(false)
                     .terminator(csv::Terminator::Any(b'\n'))
                     .from_writer(Vec::new());
+                let mut fields = Vec::with_capacity(cells.len());
+                for cell in cells {
+                    let bytes: &[u8] = cell.unwrap_or(EMPTY);
+                    let text = std::str::from_utf8(bytes)
+                        .map_err(|_| Error::Corrupt("CSV cell is not UTF-8"))?;
+                    fields.push(text);
+                }
                 writer
-                    .write_record(&selected)
+                    .write_record(&fields)
                     .map_err(|e| Error::InvalidRecord(e.to_string()))?;
                 let mut out = writer
                     .into_inner()
@@ -118,10 +195,18 @@ impl Schema {
 
 /// Parses an RFC 3339 timestamp into Unix nanoseconds.
 ///
-/// Returns an error for input that is not RFC 3339 or is outside the
+/// Returns an error for input that is not RFC 3339, or is outside the
 /// nanosecond range (1677 to 2262).
 pub fn parse_timestamp(text: &str) -> Result<i64> {
     parse_time(text).ok_or_else(|| Error::InvalidTimestamp(text.to_owned()))
+}
+
+/// Formats Unix nanoseconds as RFC 3339, in UTC.
+pub fn format_timestamp(nanos: i64) -> String {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(nanos))
+        .ok()
+        .and_then(|t| t.format(&Rfc3339).ok())
+        .unwrap_or_else(|| nanos.to_string())
 }
 
 fn parse_time(text: &str) -> Option<i64> {
@@ -129,7 +214,7 @@ fn parse_time(text: &str) -> Option<i64> {
     i64::try_from(parsed.unix_timestamp_nanos()).ok()
 }
 
-/// Splits one CSV line into fields, handling quotes. Returns `None` if it is not one row.
+/// Splits one CSV line into fields, handling quotes. Returns `None` if the line is not one row.
 fn parse_csv_fields(line: &[u8]) -> Option<Vec<String>> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -156,37 +241,57 @@ mod tests {
     }
 
     #[test]
-    fn jsonl_timestamp_and_projection() {
+    fn jsonl_cells_and_render() {
         let schema = Schema::new(Format::Jsonl, "timestamp", b"").unwrap();
-        let line = br#"{"timestamp":"1970-01-01T00:00:02Z","level":"error","msg":"x"}"#;
-        assert_eq!(schema.timestamp(line), Some(2_000_000_000));
-        let cols = vec!["level".to_owned(), "missing".to_owned()];
+        let line = br#"{"timestamp":"1970-01-01T00:00:02Z","level":"error"}"#;
+        let cells = schema.cells(line).unwrap();
+        let ts = cells.iter().find(|(k, _)| k == "timestamp").unwrap();
+        assert_eq!(schema.cell_timestamp(&ts.1), Some(2_000_000_000));
+
+        let names = vec!["level".to_owned(), "missing".to_owned()];
+        let aligned: Vec<Option<&[u8]>> = vec![Some(b"\"error\""), None];
         assert_eq!(
-            schema.project(line, &cols).unwrap(),
+            schema.render(&names, &aligned, false).unwrap(),
             br#"{"level":"error","missing":null}"#.to_vec()
+        );
+        assert_eq!(
+            schema.render(&names, &aligned, true).unwrap(),
+            br#"{"level":"error"}"#.to_vec()
         );
     }
 
     #[test]
-    fn csv_timestamp_and_projection_handle_quotes() {
-        let header = b"timestamp,level,msg";
-        let schema = Schema::new(Format::Csv, "timestamp", header).unwrap();
-        let line = b"1970-01-01T00:00:03Z,warn,\"hello, world\"";
-        assert_eq!(schema.timestamp(line), Some(3_000_000_000));
-        let cols = vec!["msg".to_owned(), "level".to_owned()];
+    fn jsonl_rejects_non_objects() {
+        let schema = Schema::new(Format::Jsonl, "timestamp", b"").unwrap();
+        assert!(schema.cells(b"[1,2,3]").is_err());
+        assert!(schema.cells(b"not json").is_err());
+    }
+
+    #[test]
+    fn csv_cells_and_render_handle_quotes() {
+        let schema = Schema::new(Format::Csv, "timestamp", b"timestamp,level,msg").unwrap();
+        let cells = schema
+            .cells(b"1970-01-01T00:00:03Z,warn,\"hello, world\"")
+            .unwrap();
+        assert_eq!(cells[2].1, b"hello, world".to_vec());
+
+        let names = vec!["msg".to_owned(), "level".to_owned()];
+        let aligned: Vec<Option<&[u8]>> = vec![Some(b"hello, world"), Some(b"warn")];
         assert_eq!(
-            schema.project(line, &cols).unwrap(),
+            schema.render(&names, &aligned, true).unwrap(),
             b"\"hello, world\",warn".to_vec()
         );
     }
 
     #[test]
-    fn csv_rejects_unknown_column() {
+    fn csv_rejects_wrong_field_count() {
         let schema = Schema::new(Format::Csv, "timestamp", b"timestamp,level").unwrap();
-        assert!(matches!(
-            schema.validate_columns(&["nope".to_owned()]),
-            Err(Error::UnknownColumn(_))
-        ));
+        assert!(schema.cells(b"a,b,c").is_err());
+    }
+
+    #[test]
+    fn csv_rejects_duplicate_header_names() {
+        assert!(Schema::new(Format::Csv, "timestamp", b"timestamp,timestamp").is_err());
     }
 
     #[test]
