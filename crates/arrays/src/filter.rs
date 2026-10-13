@@ -33,17 +33,22 @@ pub enum Filter {
     Delta,
     /// Subtract the element a row above, then shuffle.
     DeltaUp,
+    /// Subtract the Lorenzo prediction, the sum of the neighbours along each axis
+    /// with inclusion and exclusion, then shuffle. For two axes that is
+    /// `left + up - upper_left`. Chunks of more than four axes are left unpredicted.
+    Lorenzo,
 }
 
 impl Filter {
     /// Every filter, in code order.
-    pub const ALL: [Filter; 6] = [
+    pub const ALL: [Filter; 7] = [
         Filter::None,
         Filter::Shuffle,
         Filter::XorShuffle,
         Filter::UpShuffle,
         Filter::Delta,
         Filter::DeltaUp,
+        Filter::Lorenzo,
     ];
 
     /// The code stored in the index.
@@ -55,6 +60,7 @@ impl Filter {
             Filter::UpShuffle => 3,
             Filter::Delta => 4,
             Filter::DeltaUp => 5,
+            Filter::Lorenzo => 6,
         }
     }
 
@@ -75,12 +81,15 @@ impl Filter {
             Filter::UpShuffle => "xor-up+shuffle",
             Filter::Delta => "delta+shuffle",
             Filter::DeltaUp => "delta-up+shuffle",
+            Filter::Lorenzo => "lorenzo+shuffle",
         }
     }
 
     /// Applies the filter to `data`, whose elements are `elem` bytes each.
-    /// `row` is the length of a row in elements, the stride of the `Up` filters.
-    pub fn encode(self, data: &[u8], elem: usize, row: usize) -> Vec<u8> {
+    /// `extent` is the chunk's shape. The `Up` filters step back one row, which
+    /// is the last axis, and Lorenzo uses every axis.
+    pub fn encode(self, data: &[u8], elem: usize, extent: &[u64]) -> Vec<u8> {
+        let row = row_length(extent);
         match self {
             Filter::None => data.to_vec(),
             Filter::Shuffle => shuffle(data, elem),
@@ -88,11 +97,13 @@ impl Filter {
             Filter::UpShuffle => shuffle(&xor_delta(data, elem, row), elem),
             Filter::Delta => shuffle(&sub_delta(data, elem, 1), elem),
             Filter::DeltaUp => shuffle(&sub_delta(data, elem, row), elem),
+            Filter::Lorenzo => shuffle(&lorenzo(data, elem, extent, true), elem),
         }
     }
 
-    /// Undoes [`Filter::encode`], with the same `row`.
-    pub fn decode(self, data: &[u8], elem: usize, row: usize) -> Vec<u8> {
+    /// Undoes [`Filter::encode`], with the same `extent`.
+    pub fn decode(self, data: &[u8], elem: usize, extent: &[u64]) -> Vec<u8> {
+        let row = row_length(extent);
         match self {
             Filter::None => data.to_vec(),
             Filter::Shuffle => unshuffle(data, elem),
@@ -100,8 +111,77 @@ impl Filter {
             Filter::UpShuffle => xor_undelta(&unshuffle(data, elem), elem, row),
             Filter::Delta => sub_undelta(&unshuffle(data, elem), elem, 1),
             Filter::DeltaUp => sub_undelta(&unshuffle(data, elem), elem, row),
+            Filter::Lorenzo => lorenzo(&unshuffle(data, elem), elem, extent, false),
         }
     }
+}
+
+/// Elements in one row, the last axis. A chunk with no axes counts as one element.
+fn row_length(extent: &[u64]) -> usize {
+    extent.last().copied().unwrap_or(1).max(1) as usize
+}
+
+/// Largest number of axes Lorenzo predicts over. It sums up to `2^axes` terms.
+const LORENZO_MAX_AXES: usize = 4;
+
+/// The Lorenzo predictor over a chunk of shape `extent`, in C order.
+///
+/// Forward: each element minus its prediction, computed from the original
+/// values. Inverse: each residual plus the prediction, computed from values
+/// already restored, which come earlier in C order. A neighbour outside the
+/// chunk counts as zero.
+fn lorenzo(data: &[u8], elem: usize, extent: &[u64], forward: bool) -> Vec<u8> {
+    let axes = extent.len();
+    if axes == 0 || axes > LORENZO_MAX_AXES {
+        return data.to_vec();
+    }
+    let n = data.len() / elem;
+    let extent: Vec<usize> = extent.iter().map(|&e| e as usize).collect();
+    // Element distance between neighbours along each axis.
+    let mut strides = vec![1usize; axes];
+    for k in (0..axes - 1).rev() {
+        strides[k] = strides[k + 1] * extent[k + 1];
+    }
+
+    let source: Vec<u64> = (0..n).map(|i| read_elem(data, elem, i)).collect();
+    let mut values = source.clone();
+    for i in 0..n {
+        let mut prediction = 0u64;
+        // Each non-empty set of axes adds or removes the neighbour that steps back along them.
+        for mask in 1usize..(1 << axes) {
+            let mut offset = 0usize;
+            let mut inside = true;
+            for k in 0..axes {
+                if mask >> k & 1 == 1 {
+                    if (i / strides[k]) % extent[k] == 0 {
+                        inside = false;
+                        break;
+                    }
+                    offset += strides[k];
+                }
+            }
+            if !inside {
+                continue;
+            }
+            let neighbour = if forward { source[i - offset] } else { values[i - offset] };
+            if mask.count_ones() % 2 == 1 {
+                prediction = prediction.wrapping_add(neighbour);
+            } else {
+                prediction = prediction.wrapping_sub(neighbour);
+            }
+        }
+        values[i] = if forward {
+            source[i].wrapping_sub(prediction)
+        } else {
+            values[i].wrapping_add(prediction)
+        };
+    }
+
+    let mut out = data.to_vec();
+    for (i, &value) in values.iter().enumerate() {
+        write_elem(&mut out, elem, i, value);
+    }
+    out
 }
 
 /// Byte `j` of element `i` moves to `j * n + i`, where `n` is the element count.
@@ -198,11 +278,13 @@ mod tests {
     fn every_filter_inverts_exactly() {
         let data: Vec<u8> = (0..240u32).map(|i| (i * 37 % 251) as u8).collect();
         for elem in [1, 2, 4, 8] {
-            for row in [1, 3, 10] {
+            let n = 240 / elem as u64;
+            for row in [1u64, 3, 10] {
+                let extent = [n / row, row];
                 for filter in Filter::ALL {
-                    let encoded = filter.encode(&data, elem, row);
+                    let encoded = filter.encode(&data, elem, &extent);
                     assert_eq!(
-                        filter.decode(&encoded, elem, row),
+                        filter.decode(&encoded, elem, &extent),
                         data,
                         "{filter:?} elem {elem} row {row}"
                     );
@@ -212,11 +294,43 @@ mod tests {
     }
 
     #[test]
+    fn lorenzo_inverts_on_three_axes_and_predicts_a_plane() {
+        // A 2 x 3 x 5 chunk of 8-byte values that are exactly linear in the coordinates.
+        let extent = [2u64, 3, 5];
+        let values: Vec<u8> = (0..30u64)
+            .flat_map(|i| {
+                let (a, b, c) = (i / 15, (i / 5) % 3, i % 5);
+                (100 + 7 * a + 3 * b + 2 * c).to_le_bytes()
+            })
+            .collect();
+        let encoded = Filter::Lorenzo.encode(&values, 8, &extent);
+        assert_eq!(Filter::Lorenzo.decode(&encoded, 8, &extent), values);
+        // A linear field has zero Lorenzo residual wherever every neighbour exists,
+        // which is every element with a coordinate of at least 1 on each axis.
+        let residuals = lorenzo(&values, 8, &extent, true);
+        for a in 1..2u64 {
+            for b in 1..3u64 {
+                for c in 1..5u64 {
+                    let i = (a * 15 + b * 5 + c) as usize;
+                    assert_eq!(read_elem(&residuals, 8, i), 0, "element {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lorenzo_leaves_more_than_four_axes_alone() {
+        let data: Vec<u8> = (0..32u8).collect();
+        let extent = [2u64; 5];
+        assert_eq!(lorenzo(&data, 1, &extent, true), data);
+    }
+
+    #[test]
     fn xor_shuffle_zeroes_repeated_high_bytes() {
         // Eight equal f32 values. After XOR-delta the last seven are all zero
         // (28 bytes). The first value 1.5 has two zero bytes of its own.
         let data: Vec<u8> = (0..8).flat_map(|_| 1.5f32.to_le_bytes()).collect();
-        let encoded = Filter::XorShuffle.encode(&data, 4, 1);
+        let encoded = Filter::XorShuffle.encode(&data, 4, &[8]);
         assert_eq!(encoded.iter().filter(|&&b| b == 0).count(), 28 + 2);
     }
 
@@ -225,8 +339,8 @@ mod tests {
         // Two rows of three identical values each: the second row becomes zero.
         let row = [7u8, 7, 7];
         let data: Vec<u8> = [row, row].concat();
-        assert_eq!(&Filter::UpShuffle.encode(&data, 1, 3)[3..], &[0, 0, 0]);
-        assert_eq!(&Filter::DeltaUp.encode(&data, 1, 3)[3..], &[0, 0, 0]);
+        assert_eq!(&Filter::UpShuffle.encode(&data, 1, &[2, 3])[3..], &[0, 0, 0]);
+        assert_eq!(&Filter::DeltaUp.encode(&data, 1, &[2, 3])[3..], &[0, 0, 0]);
     }
 
     #[test]
