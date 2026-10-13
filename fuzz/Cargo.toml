@@ -43,3 +43,17 @@ doc = false
 bench = false
 
 [workspace]
+
+[[bin]]
+name = "tensors_pytorch"
+path = "fuzz_targets/tensors_pytorch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tensors_manifest"
+path = "fuzz_targets/tensors_manifest.rs"
+test = false
+doc = false
+bench = false

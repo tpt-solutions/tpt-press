@@ -1,0 +1,24 @@
+[package]
+name = "tpt-press-tests"
+description = "Cross-crate integration tests for tpt-press"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+tpt-press-core = { path = "../crates/core", version = "0.1.0" }
+tpt-press-assets = { path = "../crates/assets", version = "0.1.0" }
+tpt-press-tensors = { path = "../crates/tensors", version = "0.1.0", features = ["async"] }
+tpt-press-logs = { path = "../crates/logs", version = "0.1.0" }
+tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt"] }
+tempfile = "3.27.0"

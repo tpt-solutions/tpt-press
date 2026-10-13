@@ -7,18 +7,27 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use age::secrecy::ExposeSecret;
+use age::x25519;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
-use tpt_press_assets as assets;
+use std::str::FromStr;
+use tpt_press_arrays::{self as arrays, ArraysArchive};
+use tpt_press_assets::{self as assets, AssetsArchive};
 use tpt_press_core::archive::{self, PackOptions, UnpackOptions, DEFAULT_CHUNK_SIZE};
 use tpt_press_core::codec::{DEFAULT_LEVEL, MAX_LEVEL, MIN_LEVEL};
-use tpt_press_core::{open_archive, pack_encrypted, Error as CoreError};
-use tpt_press_logs::{self as logs, Format, Query, DEFAULT_BLOCK_SIZE};
-use tpt_press_tensors as tensors;
+use tpt_press_core::ArchiveFormat;
+use tpt_press_core::Chunking;
+use tpt_press_core::{
+    open_archive, open_with_identities, pack_encrypted, pack_for_recipients, Error as CoreError,
+};
+use tpt_press_genomics::{self as genomics, GenomicsArchive};
+use tpt_press_logs::{self as logs, Format, LogsArchive, Query, DEFAULT_BLOCK_SIZE};
+use tpt_press_tensors::{self as tensors, TensorsArchive};
 
 #[derive(Parser)]
 #[command(
@@ -39,9 +48,19 @@ enum Command {
         input: PathBuf,
         /// Archive to write. Removed if packing fails.
         output: PathBuf,
-        /// Uncompressed bytes per chunk, up to 64 MiB.
+        /// Uncompressed bytes per chunk, up to 64 MiB. With --content-defined,
+        /// the average, a power of two from 256 bytes to 16 MiB.
         #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
         chunk_size: usize,
+        /// Split at content-defined boundaries, not fixed offsets. An edit then
+        /// changes only nearby chunks, which helps deduplication across versions.
+        #[arg(long)]
+        content_defined: bool,
+        /// Train a zstd dictionary of at most this many bytes (up to 1 MiB) from
+        /// the start of the input, and compress with it. Pays off on large inputs
+        /// with repeated structure, such as logs.
+        #[arg(long, value_name = "BYTES")]
+        dictionary: Option<usize>,
         /// zstd compression level.
         #[arg(long, default_value_t = DEFAULT_LEVEL, value_parser = clap::value_parser!(i32).range(i64::from(MIN_LEVEL)..=i64::from(MAX_LEVEL)))]
         level: i32,
@@ -53,6 +72,29 @@ enum Command {
         /// ignored. Implies --encrypt.
         #[arg(long, value_name = "FILE")]
         passphrase_file: Option<PathBuf>,
+        /// Encrypt to this age public key (`age1...`). Repeat for more recipients.
+        /// Any of them can open the archive with its identity. Cannot be combined
+        /// with a passphrase.
+        #[arg(
+            long,
+            value_name = "KEY",
+            conflicts_with_all = ["encrypt", "passphrase_file"]
+        )]
+        recipient: Vec<String>,
+        /// Encrypt to the public keys in this file, one per line. Lines starting
+        /// with `#` are ignored.
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with_all = ["encrypt", "passphrase_file"]
+        )]
+        recipient_file: Option<PathBuf>,
+    },
+    /// Create an age identity file, and print its public key to give to senders.
+    Keygen {
+        /// Identity file to write. Keep it private: it can open any archive
+        /// encrypted to its public key.
+        output: PathBuf,
     },
     /// Restore the original file from a tpt-press archive.
     Unpack {
@@ -61,22 +103,35 @@ enum Command {
         /// File to write. Removed if unpacking fails.
         output: PathBuf,
         /// Passphrase file for an encrypted archive. Prompts if omitted.
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", conflicts_with = "identity")]
         passphrase_file: Option<PathBuf>,
+        /// age identity file for an archive encrypted to public keys.
+        #[arg(long, value_name = "FILE")]
+        identity: Option<PathBuf>,
+        /// Refuse to write more than this many bytes. Use it for archives from
+        /// untrusted sources, which could unpack to far more than their size.
+        #[arg(long, value_name = "BYTES")]
+        max_output: Option<u64>,
     },
     /// Show an archive's structure and compression ratio, without extracting it.
     Inspect {
         /// Archive to read.
         archive: PathBuf,
-        /// For tensor archives: also check every piece's checksum.
+        /// For tensor and assets archives: also check every checksum.
         #[arg(long)]
         verify: bool,
         /// Also print one row per chunk.
         #[arg(long)]
         chunks: bool,
+        /// Tensor archives only: also list every tensor with its dtype, shape and size.
+        #[arg(long)]
+        tensors: bool,
         /// Passphrase file for an encrypted archive. Prompts if omitted.
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", conflicts_with = "identity")]
         passphrase_file: Option<PathBuf>,
+        /// age identity file for an archive encrypted to public keys.
+        #[arg(long, value_name = "FILE")]
+        identity: Option<PathBuf>,
     },
     /// Compress a JSON Lines or CSV log into a time-indexed archive.
     PackLogs {
@@ -97,16 +152,51 @@ enum Command {
         /// zstd compression level.
         #[arg(long, default_value_t = DEFAULT_LEVEL, value_parser = clap::value_parser!(i32).range(i64::from(MIN_LEVEL)..=i64::from(MAX_LEVEL)))]
         level: i32,
+        /// Do not train a dictionary. Each block then compresses alone.
+        #[arg(long)]
+        no_dictionary: bool,
+        /// Encrypt with a passphrase, prompted for unless --passphrase-file is given.
+        #[arg(long, conflicts_with = "recipient", conflicts_with = "recipient_file")]
+        encrypt: bool,
+        /// Encrypt with the passphrase in this file. Implies --encrypt.
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with = "recipient",
+            conflicts_with = "recipient_file"
+        )]
+        passphrase_file: Option<PathBuf>,
+        /// Encrypt to this age public key (`age1...`). Repeat for more recipients.
+        #[arg(
+            long,
+            value_name = "KEY",
+            conflicts_with = "encrypt",
+            conflicts_with = "passphrase_file"
+        )]
+        recipient: Vec<String>,
+        /// Encrypt to the public keys in this file, one per line.
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with = "encrypt",
+            conflicts_with = "passphrase_file"
+        )]
+        recipient_file: Option<PathBuf>,
     },
-    /// Pack a model into a tensor archive. Safetensors and GGUF are supported.
+    /// Pack a model into a tensor archive. Safetensors, GGUF, ONNX and PyTorch checkpoints are supported.
     PackTensors {
-        /// Model file to pack: safetensors or GGUF, detected from the contents.
+        /// Model file to pack, detected from its contents.
         input: PathBuf,
-        /// Archive to write. Removed if packing fails.
+        /// Archive to write. Removed if packing fails. With --shard-size, a
+        /// directory to create, holding the shards and a manifest.
         output: PathBuf,
         /// zstd compression level.
         #[arg(long, default_value_t = DEFAULT_LEVEL, value_parser = clap::value_parser!(i32).range(i64::from(MIN_LEVEL)..=i64::from(MAX_LEVEL)))]
         level: i32,
+        /// Split the model into shards of at most this many bytes of tensor data,
+        /// written into the output directory. A larger tensor gets a shard to itself.
+        #[arg(long, value_name = "BYTES")]
+        shard_size: Option<u64>,
     },
     /// Write a tensor archive back out as a safetensors file.
     UnpackTensors {
@@ -148,17 +238,110 @@ enum Command {
     /// Records go to stdout, and the summary goes to stderr, so the output
     /// can be piped.
     Query {
-        /// Logs archive to read.
+        /// Logs or tensor archive to read.
         archive: PathBuf,
-        /// Earliest timestamp to include, as RFC 3339.
+        /// Tensor archives only: the tensor to output, as raw bytes.
+        name: Option<String>,
+        /// Earliest timestamp to include, as RFC 3339. Logs only.
         #[arg(long)]
         from: Option<String>,
-        /// Latest timestamp to include, as RFC 3339.
+        /// Latest timestamp to include, as RFC 3339. Logs only.
         #[arg(long)]
         to: Option<String>,
-        /// Comma-separated columns to output, in order. Outputs whole records if omitted.
+        /// Comma-separated columns to output, in order. Outputs whole records if omitted. Logs only.
         #[arg(long, value_delimiter = ',')]
         columns: Option<Vec<String>>,
+        /// Logs only, in builds with the `strata` feature: run this SQL over the
+        /// matching records and print the result. The table is named `logs`.
+        #[arg(long, value_name = "SQL")]
+        sql: Option<String>,
+        /// Tensor archives only: write the tensor to this file, not stdout.
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Encrypted logs archives: passphrase file. Prompts if omitted.
+        #[arg(long, value_name = "FILE", conflicts_with = "identity")]
+        passphrase_file: Option<PathBuf>,
+        /// Encrypted logs archives: age identity file.
+        #[arg(long, value_name = "FILE")]
+        identity: Option<PathBuf>,
+    },
+    /// Compress a FASTA or FASTQ file into a genomics archive. The format is
+    /// taken from the first byte: `>` is FASTA, `@` is FASTQ.
+    PackGenomics {
+        /// FASTA or FASTQ file to compress.
+        input: PathBuf,
+        /// Archive to write. Removed if packing fails.
+        output: PathBuf,
+        /// Sequence bases per block before compression. Smaller blocks make
+        /// `fetch-genomics` read less, and compress a little worse.
+        #[arg(long, default_value_t = genomics::DEFAULT_BLOCK_BASES)]
+        block_bases: usize,
+        /// zstd compression level.
+        #[arg(long, default_value_t = DEFAULT_LEVEL)]
+        level: i32,
+    },
+    /// Write the original FASTA or FASTQ back out, byte for byte.
+    UnpackGenomics {
+        /// Genomics archive to read.
+        archive: PathBuf,
+        /// File to write.
+        output: PathBuf,
+    },
+    /// Print one record from a genomics archive, or part of it, by name.
+    ///
+    /// Only the block that holds the record is decoded. The record goes to
+    /// stdout as FASTA or FASTQ, in the archive's own format.
+    FetchGenomics {
+        /// Genomics archive to read.
+        archive: PathBuf,
+        /// Record name: the header up to its first whitespace.
+        id: String,
+        /// First base of the range, 1-based. Needs `--end`.
+        #[arg(long, requires = "end")]
+        start: Option<u64>,
+        /// Last base of the range, 1-based and inclusive. Needs `--start`.
+        #[arg(long, requires = "start")]
+        end: Option<u64>,
+    },
+    /// Compress an array into a chunked arrays archive. A `.npy` file keeps its
+    /// header, so unpacking reproduces it. Raw bytes need `--dtype` and `--shape`.
+    PackArrays {
+        /// `.npy` file or raw bytes to compress.
+        input: PathBuf,
+        /// Archive to write. Removed if packing fails.
+        output: PathBuf,
+        /// Element type for raw input, as a NumPy descr such as `f4` or `<f8`.
+        #[arg(long)]
+        dtype: Option<String>,
+        /// Shape for raw input, comma-separated, such as `1000,256`.
+        #[arg(long, value_delimiter = ',')]
+        shape: Option<Vec<u64>>,
+        /// Chunk shape, comma-separated, one length per axis. Picks about 1 MiB per chunk if omitted.
+        #[arg(long, value_delimiter = ',')]
+        chunk: Option<Vec<u64>>,
+        /// Filter for every chunk. `auto` tries each and keeps the smallest.
+        #[arg(long, value_parser = ["auto", "none", "shuffle", "xor", "up", "delta", "delta-up"], default_value = "auto")]
+        filter: String,
+        /// zstd compression level.
+        #[arg(long, default_value_t = DEFAULT_LEVEL)]
+        level: i32,
+    },
+    /// Write the whole array back out. A `.npy` archive gives the original file.
+    UnpackArrays {
+        /// Arrays archive to read.
+        archive: PathBuf,
+        /// File to write.
+        output: PathBuf,
+    },
+    /// Write one rectangular slice of an arrays archive to stdout as raw bytes.
+    ///
+    /// Only the chunks the slice touches are decoded.
+    SliceArrays {
+        /// Arrays archive to read.
+        archive: PathBuf,
+        /// One range per axis, as `START:END` with END exclusive. Repeat the option for each axis.
+        #[arg(long = "range", value_name = "START:END", required = true)]
+        ranges: Vec<String>,
     },
 }
 
@@ -169,33 +352,67 @@ fn main() -> ExitCode {
             input,
             output,
             chunk_size,
+            content_defined,
+            dictionary,
             level,
             encrypt,
             passphrase_file,
-        } => pack(
-            &input,
-            &output,
-            chunk_size,
-            level,
-            encrypt,
-            passphrase_file.as_deref(),
-        ),
+            recipient,
+            recipient_file,
+        } => {
+            let encryption = encryption_choice(encrypt, passphrase_file, recipient, recipient_file);
+            pack(
+                &input,
+                &output,
+                chunk_size,
+                if content_defined {
+                    Chunking::ContentDefined
+                } else {
+                    Chunking::Fixed
+                },
+                dictionary,
+                level,
+                encryption,
+            )
+        }
         Command::Unpack {
             archive,
             output,
             passphrase_file,
-        } => unpack(&archive, &output, passphrase_file.as_deref()),
+            identity,
+            max_output,
+        } => unpack(
+            &archive,
+            &output,
+            passphrase_file.as_deref(),
+            identity.as_deref(),
+            max_output,
+        ),
+        Command::Keygen { output } => keygen(&output),
         Command::Inspect {
             archive,
             chunks,
+            tensors,
             passphrase_file,
+            identity,
             verify,
-        } => inspect(&archive, chunks, passphrase_file.as_deref(), verify),
+        } => inspect(
+            &archive,
+            chunks,
+            tensors,
+            passphrase_file.as_deref(),
+            identity.as_deref(),
+            verify,
+        ),
         Command::PackTensors {
             input,
             output,
             level,
-        } => pack_tensors(&input, &output, level),
+            shard_size,
+        } => match shard_size {
+            Some(bytes) => pack_tensor_shards(&input, &output, bytes, level),
+            None => pack_tensors(&input, &output, level),
+        },
         Command::UnpackTensors { archive, output } => unpack_tensors(&archive, &output),
         Command::PackLogs {
             input,
@@ -204,20 +421,73 @@ fn main() -> ExitCode {
             timestamp_field,
             block_size,
             level,
-        } => pack_logs(
-            &input,
-            &output,
-            format.as_deref(),
-            &timestamp_field,
-            block_size,
+            no_dictionary,
+            encrypt,
+            passphrase_file,
+            recipient,
+            recipient_file,
+        } => {
+            let encryption = encryption_choice(encrypt, passphrase_file, recipient, recipient_file);
+            pack_logs(
+                &input,
+                &output,
+                LogsPackArgs {
+                    format: format.as_deref(),
+                    timestamp_field: &timestamp_field,
+                    block_size,
+                    level,
+                    dictionary: !no_dictionary,
+                },
+                encryption,
+            )
+        }
+        Command::PackGenomics {
+            input,
+            output,
+            block_bases,
             level,
-        ),
+        } => pack_genomics(&input, &output, block_bases, level),
+        Command::UnpackGenomics { archive, output } => unpack_genomics(&archive, &output),
+        Command::PackArrays {
+            input,
+            output,
+            dtype,
+            shape,
+            chunk,
+            filter,
+            level,
+        } => pack_arrays(&input, &output, dtype, shape, chunk, &filter, level),
+        Command::UnpackArrays { archive, output } => unpack_arrays(&archive, &output),
+        Command::SliceArrays { archive, ranges } => slice_arrays(&archive, &ranges),
+        Command::FetchGenomics {
+            archive,
+            id,
+            start,
+            end,
+        } => fetch_genomics(&archive, &id, start.zip(end)),
         Command::Query {
             archive,
+            name,
             from,
             to,
             columns,
-        } => query_logs(&archive, from.as_deref(), to.as_deref(), columns),
+            sql,
+            output,
+            passphrase_file,
+            identity,
+        } => query(
+            &archive,
+            name.as_deref(),
+            from.as_deref(),
+            to.as_deref(),
+            columns,
+            sql.as_deref(),
+            output.as_deref(),
+            Credentials {
+                passphrase_file: passphrase_file.as_deref(),
+                identity: identity.as_deref(),
+            },
+        ),
         Command::PackAssets {
             input,
             output,
@@ -244,34 +514,85 @@ fn main() -> ExitCode {
     }
 }
 
+/// How `pack` encrypts, if at all.
+enum Encryption {
+    /// No encryption.
+    Off,
+    /// A passphrase, from this file, or prompted for if `None`.
+    Passphrase(Option<PathBuf>),
+    /// Public keys given on the command line, and keys from this file.
+    Recipients(Vec<String>, Option<PathBuf>),
+}
+
+/// The encryption asked for on the command line. Recipient keys take precedence
+/// over a passphrase, and the two cannot be combined (clap refuses that).
+fn encryption_choice(
+    encrypt: bool,
+    passphrase_file: Option<PathBuf>,
+    recipient: Vec<String>,
+    recipient_file: Option<PathBuf>,
+) -> Encryption {
+    if !recipient.is_empty() || recipient_file.is_some() {
+        Encryption::Recipients(recipient, recipient_file)
+    } else if encrypt || passphrase_file.is_some() {
+        Encryption::Passphrase(passphrase_file)
+    } else {
+        Encryption::Off
+    }
+}
+
+/// The passphrase, or the recipient keys, that an encryption choice resolves to.
+type ResolvedKeys = (Option<String>, Option<Vec<x25519::Recipient>>);
+
+/// Reads any passphrase file or recipient keys. Done before an output file is
+/// created, so a bad key leaves nothing behind.
+fn resolve_encryption(encryption: Encryption) -> Result<ResolvedKeys, Box<dyn Error>> {
+    Ok(match encryption {
+        Encryption::Off => (None, None),
+        Encryption::Passphrase(file) => {
+            let passphrase = match file {
+                Some(file) => read_passphrase_file(&file)?,
+                None => prompt_new_passphrase()?,
+            };
+            (Some(passphrase), None)
+        }
+        Encryption::Recipients(keys, file) => {
+            (None, Some(read_recipients(&keys, file.as_deref())?))
+        }
+    })
+}
+
 fn pack(
     input: &Path,
     output: &Path,
     chunk_size: usize,
+    chunking: Chunking,
+    dictionary: Option<usize>,
     level: i32,
-    encrypt: bool,
-    passphrase_file: Option<&Path>,
+    encryption: Encryption,
 ) -> Result<String, Box<dyn Error>> {
-    let opts = PackOptions { chunk_size, level };
+    let opts = PackOptions {
+        chunk_size,
+        chunking,
+        level,
+        dictionary,
+    };
     let reader = open_file(input, "packing")?;
 
-    let passphrase = match passphrase_file {
-        Some(file) => Some(read_passphrase_file(file)?),
-        None if encrypt => Some(prompt_new_passphrase()?),
-        None => None,
-    };
-    let writer = BufWriter::new(create(output)?);
+    let (passphrase, recipients) = resolve_encryption(encryption)?;
 
-    let stats = finish_or_remove(output, || match &passphrase {
-        Some(p) => pack_encrypted(reader, writer, &opts, p),
-        None => archive::pack(reader, writer, &opts),
+    let writer = BufWriter::new(create(output)?);
+    let stats = finish_or_remove(output, || match (&passphrase, &recipients) {
+        (Some(p), _) => pack_encrypted(reader, writer, &opts, p),
+        (None, Some(r)) => pack_for_recipients(reader, writer, &opts, r),
+        (None, None) => archive::pack(reader, writer, &opts),
     })?;
-    let ratio = stats.uncompressed_bytes as f64 / stats.archive_bytes.max(1) as f64;
-    let encrypted = if passphrase.is_some() {
-        ", encrypted"
-    } else {
-        ""
+    let encrypted = match (&passphrase, &recipients) {
+        (Some(_), _) => ", encrypted",
+        (None, Some(_)) => ", encrypted to public keys",
+        (None, None) => "",
     };
+    let ratio = stats.uncompressed_bytes as f64 / stats.archive_bytes.max(1) as f64;
     Ok(format!(
         "packed {} -> {} bytes ({ratio:.2}x, {} chunks{encrypted})",
         stats.uncompressed_bytes, stats.archive_bytes, stats.chunks
@@ -282,12 +603,31 @@ fn unpack(
     archive_path: &Path,
     output: &Path,
     passphrase_file: Option<&Path>,
+    identity_file: Option<&Path>,
+    max_output: Option<u64>,
 ) -> Result<String, Box<dyn Error>> {
-    let reader = open_archive_file(archive_path, passphrase_file, "unpacking")?;
+    let kind = ArchiveKind::detect(archive_path)?;
+    if kind != ArchiveKind::Generic {
+        return Err(format!(
+            "{} is a {} archive; use `{}`",
+            archive_path.display(),
+            kind.name(),
+            kind.command()
+        )
+        .into());
+    }
+    let reader = open_archive_file(archive_path, passphrase_file, identity_file, "unpacking")?;
     let writer = BufWriter::new(create(output)?);
 
     let stats = finish_or_remove(output, || {
-        archive::unpack(reader, writer, &UnpackOptions::default())
+        archive::unpack(
+            reader,
+            writer,
+            &UnpackOptions {
+                max_total_size: max_output,
+                ..UnpackOptions::default()
+            },
+        )
     })?;
     Ok(format!(
         "unpacked {} bytes from {} chunks",
@@ -298,21 +638,48 @@ fn unpack(
 fn inspect(
     path: &Path,
     show_chunks: bool,
+    list_tensors: bool,
     passphrase_file: Option<&Path>,
+    identity_file: Option<&Path>,
     verify: bool,
 ) -> Result<String, Box<dyn Error>> {
-    match file_magic(path)?.as_slice() {
-        b"TPLG" => {
+    let kind = ArchiveKind::detect(path)?;
+    let tensor_like = matches!(kind, ArchiveKind::Tensors | ArchiveKind::Sharded);
+    if list_tensors && !tensor_like {
+        return Err(format!(
+            "--tensors applies to tensor archives, not {} archives",
+            kind.name()
+        )
+        .into());
+    }
+    if show_chunks && kind != ArchiveKind::Generic {
+        return Err(format!(
+            "--chunks applies to generic archives, not {} archives",
+            kind.name()
+        )
+        .into());
+    }
+    match kind {
+        ArchiveKind::Logs => return inspect_logs(path),
+        ArchiveKind::Tensors => return inspect_tensors(path, verify, list_tensors),
+        ArchiveKind::Sharded => return inspect_sharded(path, verify, list_tensors),
+        ArchiveKind::Assets => return inspect_assets(path, verify),
+        ArchiveKind::Genomics => return inspect_genomics(path),
+        ArchiveKind::Arrays => return inspect_arrays(path),
+        ArchiveKind::Generic => {}
+    }
+
+    let reader = open_archive_file(path, passphrase_file, identity_file, "reading")?;
+    // An encrypted logs archive looks generic until it is decrypted.
+    let reader = match peek_kind(reader)? {
+        Peeked::Logs(bytes) => {
             if show_chunks {
                 return Err("--chunks applies to generic archives, not logs archives".into());
             }
-            return inspect_logs(path);
+            return inspect_logs_from(path, Cursor::new(bytes));
         }
-        b"TPTN" => return inspect_tensors(path, verify),
-        _ => {}
-    }
-
-    let reader = open_archive_file(path, passphrase_file, "reading")?;
+        Peeked::Other(reader) => reader,
+    };
     let inspection = archive::inspect(reader)?;
     let stats = &inspection.stats;
 
@@ -323,6 +690,12 @@ fn inspect(
         format!("archive size:  {} bytes", stats.archive_bytes),
         format!("ratio:         {:.2}x", inspection.ratio()),
     ];
+    if inspection.dictionary_bytes > 0 {
+        lines.push(format!(
+            "dictionary:    {} bytes",
+            inspection.dictionary_bytes
+        ));
+    }
 
     if show_chunks {
         lines.push(String::new());
@@ -342,15 +715,22 @@ fn inspect(
     Ok(lines.join("\n"))
 }
 
+/// The settings of `pack-logs` that are not the paths or the encryption.
+struct LogsPackArgs<'a> {
+    format: Option<&'a str>,
+    timestamp_field: &'a str,
+    block_size: usize,
+    level: i32,
+    dictionary: bool,
+}
+
 fn pack_logs(
     input: &Path,
     output: &Path,
-    format: Option<&str>,
-    timestamp_field: &str,
-    block_size: usize,
-    level: i32,
+    args: LogsPackArgs,
+    encryption: Encryption,
 ) -> Result<String, Box<dyn Error>> {
-    let format = match format {
+    let format = match args.format {
         Some("csv") => Format::Csv,
         Some(_) => Format::Jsonl,
         None if input
@@ -363,20 +743,70 @@ fn pack_logs(
     };
     let opts = logs::PackOptions {
         format,
-        timestamp_field: timestamp_field.to_owned(),
-        block_size,
-        level,
+        timestamp_field: args.timestamp_field.to_owned(),
+        block_size: args.block_size,
+        level: args.level,
+        dictionary: args.dictionary,
     };
 
+    let (passphrase, recipients) = resolve_encryption(encryption)?;
     let reader = open_file(input, "packing")?;
-    let writer = BufWriter::new(create(output)?);
-    let stats = finish_or_remove(output, || logs::pack(reader, writer, &opts))?;
+    let stats = write_logs(
+        output,
+        reader,
+        &opts,
+        passphrase.as_deref(),
+        recipients.as_deref(),
+    )?;
 
+    let encrypted = match (&passphrase, &recipients) {
+        (Some(_), _) => ", encrypted",
+        (None, Some(_)) => ", encrypted to public keys",
+        (None, None) => "",
+    };
     let ratio = stats.input_bytes as f64 / stats.archive_bytes.max(1) as f64;
     Ok(format!(
-        "packed {} records in {} blocks: {} -> {} bytes ({ratio:.2}x, {}-byte dictionary)",
+        "packed {} records in {} blocks: {} -> {} bytes ({ratio:.2}x, {}-byte dictionary{encrypted})",
         stats.records, stats.blocks, stats.input_bytes, stats.archive_bytes, stats.dictionary_bytes
     ))
+}
+
+/// Writes a logs archive to `output`, encrypted if a passphrase or recipients are
+/// given. The archive is encrypted as it is written, so no plaintext copy is
+/// made. The output is removed if packing fails.
+fn write_logs<R: BufRead + Seek>(
+    output: &Path,
+    reader: R,
+    opts: &logs::PackOptions,
+    passphrase: Option<&str>,
+    recipients: Option<&[x25519::Recipient]>,
+) -> Result<logs::Stats, Box<dyn Error>> {
+    let run = || -> Result<logs::Stats, Box<dyn Error>> {
+        let file = BufWriter::new(create(output)?);
+        Ok(match (passphrase, recipients) {
+            (Some(p), _) => {
+                let mut encrypted = tpt_press_core::encrypt_with_passphrase(file, p)?;
+                let stats = logs::pack(reader, &mut encrypted, opts)?;
+                encrypted.finish()?.flush()?;
+                stats
+            }
+            (None, Some(r)) => {
+                let mut encrypted = tpt_press_core::encrypt_for_recipients(file, r)?;
+                let stats = logs::pack(reader, &mut encrypted, opts)?;
+                encrypted.finish()?.flush()?;
+                stats
+            }
+            (None, None) => {
+                let mut file = file;
+                let stats = logs::pack(reader, &mut file, opts)?;
+                file.flush()?;
+                stats
+            }
+        })
+    };
+    run().inspect_err(|_| {
+        let _ = fs::remove_file(output);
+    })
 }
 
 /// Writes matching records to stdout and the summary to stderr. Returns an
@@ -474,6 +904,38 @@ fn unpack_assets(archive_path: &Path, output_dir: &Path) -> Result<String, Box<d
     ))
 }
 
+/// Packs a model into shards in the directory `output`, with a manifest.
+/// Removes the directory if packing fails, since this command created it.
+fn pack_tensor_shards(
+    input: &Path,
+    output: &Path,
+    shard_bytes: u64,
+    level: i32,
+) -> Result<String, Box<dyn Error>> {
+    let reader = open_file(input, "packing")?;
+    fs::create_dir(output).map_err(|e| format!("cannot create {}: {e}", output.display()))?;
+
+    let opts = tensors::PackOptions { level };
+    let result = (|| -> Result<(tensors::Manifest, usize), Box<dyn Error>> {
+        let (manifest, stats) = tensors::pack_sharded(reader, shard_bytes, &opts, |name| {
+            File::create(output.join(name)).map(BufWriter::new)
+        })?;
+        fs::write(output.join(tensors::MANIFEST_FILE), manifest.to_json())?;
+        Ok((manifest, stats.len()))
+    })();
+    match result {
+        Ok((manifest, shards)) => Ok(format!(
+            "packed {} tensors into {shards} shards in {}",
+            manifest.tensor_count(),
+            output.display()
+        )),
+        Err(e) => {
+            let _ = fs::remove_dir_all(output);
+            Err(e)
+        }
+    }
+}
+
 fn pack_tensors(input: &Path, output: &Path, level: i32) -> Result<String, Box<dyn Error>> {
     let reader = open_file(input, "packing")?;
     let writer = BufWriter::new(create(output)?);
@@ -500,7 +962,7 @@ fn unpack_tensors(archive_path: &Path, output: &Path) -> Result<String, Box<dyn 
     ))
 }
 
-fn inspect_tensors(path: &Path, verify: bool) -> Result<String, Box<dyn Error>> {
+fn inspect_tensors(path: &Path, verify: bool, list: bool) -> Result<String, Box<dyn Error>> {
     let file_bytes = fs::metadata(path)?.len();
     let mut archive = tensors::Archive::open(open_file(path, "reading")?)?;
 
@@ -536,6 +998,25 @@ fn inspect_tensors(path: &Path, verify: bool) -> Result<String, Box<dyn Error>> 
     }
     lines.push(format!("data:           {data_bytes} bytes"));
     lines.push(format!("archive size:   {file_bytes} bytes"));
+    if list {
+        lines.push(String::new());
+        lines.push(format!(
+            "{:<40} {:<8} {:<24} {:>14}",
+            "tensor", "dtype", "shape", "bytes"
+        ));
+        for t in archive.tensors() {
+            let shape = t
+                .shape
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join("x");
+            lines.push(format!(
+                "{:<40} {:<8} {:<24} {:>14}",
+                t.name, t.dtype, shape, t.byte_len
+            ));
+        }
+    }
     if verify {
         archive.verify()?;
         lines.push("all checksums match".to_owned());
@@ -567,24 +1048,145 @@ fn list_assets(archive_path: &Path, verify: bool) -> Result<String, Box<dyn Erro
     Ok(lines.join("\n"))
 }
 
-fn query_logs(
-    archive_path: &Path,
+/// `query` on a tensor archive outputs one tensor. On a logs archive it
+/// outputs matching records, or the result of `--sql`.
+// Eight arguments map one-to-one onto the subcommand's options.
+#[allow(clippy::too_many_arguments)]
+fn query(
+    archive: &Path,
+    name: Option<&str>,
     from: Option<&str>,
     to: Option<&str>,
     columns: Option<Vec<String>>,
+    sql: Option<&str>,
+    output: Option<&Path>,
+    creds: Credentials,
 ) -> Result<String, Box<dyn Error>> {
-    let query = Query {
+    if matches!(
+        ArchiveKind::detect(archive)?,
+        ArchiveKind::Tensors | ArchiveKind::Sharded
+    ) {
+        if from.is_some() || to.is_some() || columns.is_some() || sql.is_some() {
+            return Err("--from, --to, --columns and --sql apply to logs archives".into());
+        }
+        let name = name.ok_or("a tensor archive needs a tensor name: `query <archive> <name>`")?;
+        return query_tensor(archive, name, output);
+    }
+    if name.is_some() || output.is_some() {
+        return Err("a tensor name and --output apply to tensor archives".into());
+    }
+    let query = logs_query(from, to, columns)?;
+    match sql {
+        Some(sql) => query_logs_sql(archive, &query, sql, creds),
+        None => query_logs(archive, &query, creds),
+    }
+}
+
+/// Writes one tensor's raw bytes to `output`, or to stdout. Its summary goes to stderr,
+/// so stdout carries only the tensor.
+fn query_tensor(
+    archive_path: &Path,
+    name: &str,
+    output: Option<&Path>,
+) -> Result<String, Box<dyn Error>> {
+    // For a sharded archive, the tensor lives in one of its shard files.
+    let archive_path = if archive_path.is_dir() {
+        let manifest = read_manifest(archive_path)?;
+        let shard = manifest
+            .shards
+            .iter()
+            .find(|s| s.tensors.iter().any(|t| t == name))
+            .ok_or_else(|| format!("no tensor named `{name}` in {}", archive_path.display()))?;
+        archive_path.join(&shard.file)
+    } else {
+        archive_path.to_path_buf()
+    };
+    let archive_path = archive_path.as_path();
+    let mut archive = tensors::Archive::open(open_file(archive_path, "reading")?)?;
+    let bytes = archive
+        .tensor(name)
+        .ok_or_else(|| format!("no tensor named `{name}` in {}", archive_path.display()))?
+        .byte_len;
+
+    match output {
+        Some(path) => {
+            finish_or_remove(path, || -> tensors::Result<()> {
+                let mut writer = BufWriter::new(File::create(path).map_err(tensors::Error::Io)?);
+                archive.read_tensor_into(name, |piece| Ok(writer.write_all(piece)?))?;
+                writer.flush()?;
+                Ok(())
+            })?;
+        }
+        None => {
+            let stdout = io::stdout();
+            let mut writer = BufWriter::new(stdout.lock());
+            archive.read_tensor_into(name, |piece| Ok(writer.write_all(piece)?))?;
+            writer.flush()?;
+        }
+    }
+    eprintln!("tensor {name}: {bytes} bytes");
+    Ok(String::new())
+}
+
+fn logs_query(
+    from: Option<&str>,
+    to: Option<&str>,
+    columns: Option<Vec<String>>,
+) -> Result<Query, Box<dyn Error>> {
+    Ok(Query {
         from: from.map(logs::parse_timestamp).transpose()?,
         to: to.map(logs::parse_timestamp).transpose()?,
         columns,
-    };
+    })
+}
 
-    let reader = open_file(archive_path, "reading")?;
+/// Runs `sql` over the matching records of a logs archive, and prints the result table.
+#[cfg(feature = "strata")]
+fn query_logs_sql(
+    archive_path: &Path,
+    query: &Query,
+    sql: &str,
+    creds: Credentials,
+) -> Result<String, Box<dyn Error>> {
+    // As with `query`, an encrypted archive is decrypted into memory first.
+    let table = if file_is_encrypted(archive_path)? {
+        let bytes = decrypt_logs(archive_path, creds)?;
+        logs::query_sql(Cursor::new(bytes), query, sql)?
+    } else {
+        logs::query_sql(open_file(archive_path, "reading")?, query, sql)?
+    };
+    tpt_strata::print_table(&table);
+    Ok(String::new())
+}
+
+#[cfg(not(feature = "strata"))]
+fn query_logs_sql(
+    _archive_path: &Path,
+    _query: &Query,
+    _sql: &str,
+    _creds: Credentials,
+) -> Result<String, Box<dyn Error>> {
+    Err("--sql needs a build with the `strata` feature: cargo build --features strata".into())
+}
+
+fn query_logs(
+    archive_path: &Path,
+    query: &Query,
+    creds: Credentials,
+) -> Result<String, Box<dyn Error>> {
     let stdout = io::stdout();
     // A large buffer means fewer writes to the pipe, which is much faster when
     // the output is piped into another program.
-    let writer = BufWriter::with_capacity(1024 * 1024, stdout.lock());
-    let stats = match logs::query(reader, writer, &query) {
+    let mut writer = BufWriter::with_capacity(1024 * 1024, stdout.lock());
+    // An encrypted archive is decrypted into memory first, since a query needs
+    // to seek. Nothing is written to disk.
+    let result = if file_is_encrypted(archive_path)? {
+        let bytes = decrypt_logs(archive_path, creds)?;
+        logs::query(Cursor::new(bytes), &mut writer, query)
+    } else {
+        logs::query(open_file(archive_path, "reading")?, &mut writer, query)
+    };
+    let stats = match result {
         Ok(stats) => stats,
         // The reader stopped early, as with `query ... | head`. That is not an error.
         Err(logs::Error::Io(e)) if e.kind() == io::ErrorKind::BrokenPipe => {
@@ -600,17 +1202,405 @@ fn query_logs(
     Ok(String::new())
 }
 
-/// Whether the file starts with the logs archive magic. Logs archives are not encrypted.
-/// Reads the first four bytes of a file, which identify its archive type.
-fn file_magic(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
-    let file = open_file(path, "reading")?;
-    let mut magic = Vec::new();
-    file.take(4).read_to_end(&mut magic)?;
-    Ok(magic)
+/// How to open an encrypted archive: a passphrase file, or an identity file.
+/// With neither, a passphrase is prompted for.
+#[derive(Clone, Copy)]
+struct Credentials<'a> {
+    passphrase_file: Option<&'a Path>,
+    identity: Option<&'a Path>,
+}
+
+/// A decrypted stream, peeked at to find out what it holds.
+enum Peeked {
+    /// A logs archive, read in full.
+    Logs(Vec<u8>),
+    /// Anything else. The reader still yields the whole stream.
+    Other(Box<dyn Read>),
+}
+
+/// Reads the first four bytes of `reader` to find out whether it is a logs
+/// archive. A logs archive is read in full, since it must be seekable.
+fn peek_kind(mut reader: Box<dyn Read>) -> io::Result<Peeked> {
+    let mut head = Vec::with_capacity(4);
+    (&mut reader).take(4).read_to_end(&mut head)?;
+    if head == b"TPLG" {
+        reader.read_to_end(&mut head)?;
+        return Ok(Peeked::Logs(head));
+    }
+    Ok(Peeked::Other(Box::new(Cursor::new(head).chain(reader))))
+}
+
+/// Whether the file at `path` is an age stream, which hides its archive type.
+fn file_is_encrypted(path: &Path) -> Result<bool, Box<dyn Error>> {
+    let mut head = Vec::new();
+    open_file(path, "reading")?
+        .take(22)
+        .read_to_end(&mut head)?;
+    Ok(tpt_press_core::looks_encrypted(&head))
+}
+
+/// Decrypts a logs archive into memory. Fails if the encrypted archive holds
+/// something else.
+fn decrypt_logs(path: &Path, creds: Credentials) -> Result<Vec<u8>, Box<dyn Error>> {
+    let reader = open_archive_file(path, creds.passphrase_file, creds.identity, "reading")?;
+    match peek_kind(reader)? {
+        Peeked::Logs(bytes) => Ok(bytes),
+        Peeked::Other(_) => Err(format!(
+            "{} is an encrypted archive, but not a logs archive",
+            path.display()
+        )
+        .into()),
+    }
+}
+
+/// The archive types tpt-press writes. Each has its own magic bytes at the start of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveKind {
+    /// Core archive from `pack`. Also the fallback for anything unrecognised,
+    /// which then fails with a parse error. Encrypted archives land here too,
+    /// since they start with age's magic.
+    Generic,
+    /// Logs archive from `pack-logs`. Never encrypted.
+    Logs,
+    /// Tensor archive from `pack-tensors`.
+    Tensors,
+    /// Assets archive from `pack-assets`.
+    Assets,
+    /// A directory of tensor shards and a manifest, from `pack-tensors --shard-size`.
+    Sharded,
+    /// Genomics archive from `pack-genomics`.
+    Genomics,
+    /// Arrays archive from `pack-arrays`.
+    Arrays,
+}
+
+impl ArchiveKind {
+    /// Identifies an archive from the first four bytes of its file. A directory
+    /// is a sharded archive.
+    fn detect(path: &Path) -> Result<Self, Box<dyn Error>> {
+        if path.is_dir() {
+            return Ok(Self::Sharded);
+        }
+        let file = open_file(path, "reading")?;
+        let mut magic = Vec::new();
+        file.take(4).read_to_end(&mut magic)?;
+        Ok(if LogsArchive::recognises(&magic) {
+            Self::Logs
+        } else if TensorsArchive::recognises(&magic) {
+            Self::Tensors
+        } else if AssetsArchive::recognises(&magic) {
+            Self::Assets
+        } else if GenomicsArchive::recognises(&magic) {
+            Self::Genomics
+        } else if ArraysArchive::recognises(&magic) {
+            Self::Arrays
+        } else {
+            Self::Generic
+        })
+    }
+
+    /// A short name for error messages.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Logs => "logs",
+            Self::Tensors => "tensors",
+            Self::Assets => "assets",
+            Self::Sharded => "sharded tensors",
+            Self::Genomics => "genomics",
+            Self::Arrays => "arrays",
+        }
+    }
+
+    /// The subcommand that works on this archive type.
+    fn command(self) -> &'static str {
+        match self {
+            Self::Generic => "unpack",
+            Self::Logs => "query",
+            Self::Tensors => "unpack-tensors",
+            Self::Assets => "unpack-assets",
+            Self::Sharded => "query <directory> <name>",
+            Self::Genomics => "unpack-genomics",
+            Self::Arrays => "unpack-arrays",
+        }
+    }
+}
+
+/// Reads and checks the manifest of a sharded archive directory.
+fn read_manifest(dir: &Path) -> Result<tensors::Manifest, Box<dyn Error>> {
+    let path = dir.join(tensors::MANIFEST_FILE);
+    let text = fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read manifest {}: {e}", path.display()))?;
+    Ok(tensors::Manifest::parse(&text)?)
+}
+
+fn inspect_sharded(dir: &Path, verify: bool, list: bool) -> Result<String, Box<dyn Error>> {
+    let manifest = read_manifest(dir)?;
+    let mut lines = vec![
+        format!("archive:        {}", dir.display()),
+        format!("shards:         {}", manifest.shards.len()),
+        format!("tensors:        {}", manifest.tensor_count()),
+    ];
+    let mut total = 0u64;
+    for shard in &manifest.shards {
+        let bytes = file_len(&dir.join(&shard.file))?;
+        total += bytes;
+        lines.push(format!(
+            "  {:<20} {:>6} tensors, {bytes} bytes",
+            shard.file,
+            shard.tensors.len()
+        ));
+    }
+    lines.push(format!("archive size:   {total} bytes"));
+
+    if list {
+        lines.push(String::new());
+        lines.push(format!(
+            "{:<40} {:<8} {:<24} {:>14}",
+            "tensor", "dtype", "shape", "bytes"
+        ));
+        for shard in &manifest.shards {
+            let archive = tensors::Archive::open(open_file(&dir.join(&shard.file), "reading")?)?;
+            for t in archive.tensors() {
+                let shape = t
+                    .shape
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join("x");
+                lines.push(format!(
+                    "{:<40} {:<8} {:<24} {:>14}",
+                    t.name, t.dtype, shape, t.byte_len
+                ));
+            }
+        }
+    }
+    if verify {
+        for shard in &manifest.shards {
+            let mut archive =
+                tensors::Archive::open(open_file(&dir.join(&shard.file), "reading")?)?;
+            archive.verify()?;
+        }
+        lines.push("all checksums match".to_owned());
+    }
+    Ok(lines.join("\n"))
+}
+
+fn inspect_assets(path: &Path, verify: bool) -> Result<String, Box<dyn Error>> {
+    let archive = assets::Archive::open(path)?;
+    let entries = archive.entries();
+    let raw: u64 = entries.iter().map(|e| e.raw_len).sum();
+    let stored: u64 = entries.iter().map(|e| e.stored_len).sum();
+    let raw_stored = entries
+        .iter()
+        .filter(|e| e.compression == assets::Compression::Stored)
+        .count();
+
+    let mut lines = vec![
+        format!("archive:        {}", path.display()),
+        format!("assets:         {}", entries.len()),
+        format!("  raw         {raw_stored} assets, used in place"),
+        format!("  zstd        {} assets", entries.len() - raw_stored),
+        format!("uncompressed:   {raw} bytes"),
+        format!("stored:         {stored} bytes"),
+        format!("archive size:   {} bytes", fs::metadata(path)?.len()),
+    ];
+    if verify {
+        archive.verify()?;
+        lines.push(format!("all {} checksums match", entries.len()));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Packs FASTA or FASTQ into a genomics archive, and reports the ratio.
+fn pack_genomics(
+    input: &Path,
+    output: &Path,
+    block_bases: usize,
+    level: i32,
+) -> Result<String, Box<dyn Error>> {
+    let options = genomics::PackOptions { block_bases, level };
+    let reader = open_file(input, "packing")?;
+    let writer = BufWriter::new(create(output)?);
+    let stats = finish_or_remove(output, || genomics::pack(reader, writer, &options))?;
+    Ok(format!(
+        "packed {} {} records, {} bases in {} blocks: {} -> {} bytes ({:.2}x)",
+        stats.records,
+        stats.kind.name(),
+        stats.bases,
+        stats.blocks,
+        stats.input_bytes,
+        stats.output_bytes,
+        stats.input_bytes as f64 / stats.output_bytes.max(1) as f64
+    ))
+}
+
+fn unpack_genomics(archive: &Path, output: &Path) -> Result<String, Box<dyn Error>> {
+    let reader = open_file(archive, "unpacking")?;
+    let writer = BufWriter::new(create(output)?);
+    let summary = finish_or_remove(output, || genomics::unpack(reader, writer))?;
+    Ok(format!(
+        "unpacked {} {} records, {} bases",
+        summary.records,
+        summary.kind.name(),
+        summary.bases
+    ))
+}
+
+/// Writes one record, or a range of it, to stdout. The summary goes to stderr.
+fn fetch_genomics(
+    archive: &Path,
+    id: &str,
+    range: Option<(u64, u64)>,
+) -> Result<String, Box<dyn Error>> {
+    let stdout = io::stdout();
+    let mut writer = stdout.lock();
+    let stats = genomics::fetch(open_file(archive, "reading")?, id, range, &mut writer)?;
+    eprintln!(
+        "record {id}: {} bases; read {} blocks",
+        stats.record_length, stats.blocks_read
+    );
+    Ok(String::new())
+}
+
+/// Packs a `.npy` file, or raw bytes given with `--dtype` and `--shape`.
+fn pack_arrays(
+    input: &Path,
+    output: &Path,
+    dtype: Option<String>,
+    shape: Option<Vec<u64>>,
+    chunk: Option<Vec<u64>>,
+    filter: &str,
+    level: i32,
+) -> Result<String, Box<dyn Error>> {
+    let mut head = [0u8; 6];
+    let read = File::open(input)
+        .and_then(|mut f| f.read(&mut head))
+        .map_err(|e| format!("cannot read {}: {e}", input.display()))?;
+    let npy = arrays::is_npy(&head[..read]);
+    let raw = if npy {
+        None
+    } else {
+        let dtype = dtype.ok_or("raw input needs --dtype, such as f4 or <f8")?;
+        let shape = shape.ok_or("raw input needs --shape, such as 1000,256")?;
+        Some((dtype, shape))
+    };
+
+    let options = arrays::PackOptions {
+        chunk_shape: chunk,
+        level,
+        filter: match filter {
+            "none" => arrays::FilterChoice::Fixed(arrays::Filter::None),
+            "shuffle" => arrays::FilterChoice::Fixed(arrays::Filter::Shuffle),
+            "xor" => arrays::FilterChoice::Fixed(arrays::Filter::XorShuffle),
+            "up" => arrays::FilterChoice::Fixed(arrays::Filter::UpShuffle),
+            "delta" => arrays::FilterChoice::Fixed(arrays::Filter::Delta),
+            "delta-up" => arrays::FilterChoice::Fixed(arrays::Filter::DeltaUp),
+            _ => arrays::FilterChoice::Auto,
+        },
+    };
+    let reader = open_file(input, "packing")?;
+    let writer = BufWriter::new(create(output)?);
+    let stats = match raw {
+        None => finish_or_remove(output, || arrays::pack_npy(reader, writer, &options))?,
+        Some((dtype, shape)) => finish_or_remove(output, || {
+            arrays::pack_raw(reader, writer, &dtype, &shape, &options)
+        })?,
+    };
+    let [none, shuffle, xor, up, delta, delta_up] = stats.filter_counts;
+    Ok(format!(
+        "packed {} {:?} in {} chunks of {:?}: {} -> {} bytes ({:.2}x); filters: none {none}, shuffle {shuffle}, xor+shuffle {xor}, xor-up+shuffle {up}, delta+shuffle {delta}, delta-up+shuffle {delta_up}",
+        stats.dtype,
+        stats.shape,
+        stats.chunks,
+        stats.chunk_shape,
+        stats.input_bytes,
+        stats.output_bytes,
+        stats.input_bytes as f64 / stats.output_bytes.max(1) as f64
+    ))
+}
+
+fn unpack_arrays(archive: &Path, output: &Path) -> Result<String, Box<dyn Error>> {
+    let reader = open_file(archive, "unpacking")?;
+    let writer = BufWriter::new(create(output)?);
+    let summary = finish_or_remove(output, || arrays::unpack(reader, writer))?;
+    Ok(format!(
+        "unpacked {} {:?}{}",
+        summary.dtype,
+        summary.shape,
+        if summary.npy { " as a .npy file" } else { "" }
+    ))
+}
+
+/// Parses `START:END` ranges, one per axis.
+fn parse_ranges(specs: &[String]) -> Result<Vec<std::ops::Range<u64>>, Box<dyn Error>> {
+    specs
+        .iter()
+        .map(|spec| {
+            let (start, end) = spec
+                .split_once(':')
+                .ok_or_else(|| format!("bad range `{spec}`; use START:END"))?;
+            let start: u64 = start
+                .parse()
+                .map_err(|_| format!("bad start in `{spec}`"))?;
+            let end: u64 = end.parse().map_err(|_| format!("bad end in `{spec}`"))?;
+            Ok(start..end)
+        })
+        .collect()
+}
+
+/// Writes one slice to stdout as raw bytes. The summary goes to stderr.
+fn slice_arrays(archive: &Path, specs: &[String]) -> Result<String, Box<dyn Error>> {
+    let ranges = parse_ranges(specs)?;
+    let slice = arrays::read_slice(open_file(archive, "reading")?, &ranges)?;
+    io::stdout().lock().write_all(&slice.bytes)?;
+    eprintln!(
+        "slice {:?}: {} bytes; decoded {} chunks",
+        slice.shape,
+        slice.bytes.len(),
+        slice.chunks_read
+    );
+    Ok(String::new())
+}
+
+fn inspect_arrays(path: &Path) -> Result<String, Box<dyn Error>> {
+    let summary = arrays::inspect(open_file(path, "reading")?)?;
+    Ok([
+        format!("archive:       {}", path.display()),
+        format!("dtype:         {}", summary.dtype),
+        format!("shape:         {:?}", summary.shape),
+        format!("chunk shape:   {:?}", summary.chunk_shape),
+        format!("chunks:        {}", summary.chunks),
+        format!("raw size:      {} bytes", summary.raw_bytes),
+        format!("archive size:  {} bytes", summary.archive_bytes),
+        format!(
+            "npy header:    {}",
+            if summary.npy { "kept" } else { "none" }
+        ),
+    ]
+    .join("\n"))
+}
+
+fn inspect_genomics(path: &Path) -> Result<String, Box<dyn Error>> {
+    let summary = genomics::inspect(open_file(path, "reading")?)?;
+    Ok([
+        format!("archive:       {}", path.display()),
+        format!("format:        {}", summary.kind.name()),
+        format!("records:       {}", summary.records),
+        format!("bases:         {}", summary.bases),
+        format!("blocks:        {}", summary.blocks),
+        format!("archive size:  {} bytes", summary.archive_bytes),
+    ]
+    .join("\n"))
 }
 
 fn inspect_logs(path: &Path) -> Result<String, Box<dyn Error>> {
-    let summary = logs::inspect(open_file(path, "reading")?)?;
+    inspect_logs_from(path, open_file(path, "reading")?)
+}
+
+/// Summarises a logs archive read from `reader`. `path` is only shown in the output.
+fn inspect_logs_from<R: Read + Seek>(path: &Path, reader: R) -> Result<String, Box<dyn Error>> {
+    let summary = logs::inspect(reader)?;
     let range = match summary.time_range {
         Some((from, to)) => format!(
             "{} to {}",
@@ -643,12 +1633,18 @@ fn inspect_logs(path: &Path) -> Result<String, Box<dyn Error>> {
 }
 
 /// Opens an archive, decrypting it if needed. An encrypted archive uses
-/// `passphrase_file` if given, otherwise the user is prompted.
+/// `identity_file` for public-key encryption, or `passphrase_file` for a
+/// passphrase. With neither, the user is prompted for a passphrase.
 fn open_archive_file(
     path: &Path,
     passphrase_file: Option<&Path>,
+    identity_file: Option<&Path>,
     label: &'static str,
 ) -> Result<Box<dyn Read>, Box<dyn Error>> {
+    if let Some(file) = identity_file {
+        let identities = read_identities(file)?;
+        return Ok(open_with_identities(open_file(path, label)?, &identities)?);
+    }
     if let Some(file) = passphrase_file {
         let passphrase = read_passphrase_file(file)?;
         return Ok(open_archive(open_file(path, label)?, Some(&passphrase))?);
@@ -662,6 +1658,77 @@ fn open_archive_file(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Writes a new identity file and returns its public key. Refuses to overwrite
+/// an existing file, since that would destroy a key.
+fn keygen(output: &Path) -> Result<String, Box<dyn Error>> {
+    let identity = x25519::Identity::generate();
+    let public = identity.to_public();
+
+    let mut options = File::options();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(output)
+        .map_err(|e| format!("cannot create {}: {e}", output.display()))?;
+    writeln!(file, "# created by tpt-press")?;
+    writeln!(file, "# public key: {public}")?;
+    writeln!(file, "{}", identity.to_string().expose_secret())?;
+    Ok(format!(
+        "wrote identity to {}\npublic key: {public}",
+        output.display()
+    ))
+}
+
+/// Reads the identities in an identity file, one per line. Blank lines and
+/// lines starting with `#` are skipped.
+fn read_identities(path: &Path) -> Result<Vec<x25519::Identity>, Box<dyn Error>> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("cannot read identity file {}: {e}", path.display()))?;
+    let identities = key_lines(&text)
+        .map(|line| {
+            x25519::Identity::from_str(line)
+                .map_err(|e| format!("bad identity in {}: {e}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if identities.is_empty() {
+        return Err(format!("identity file {} has no keys", path.display()).into());
+    }
+    Ok(identities)
+}
+
+/// The public keys given on the command line, plus those in `file`.
+fn read_recipients(
+    keys: &[String],
+    file: Option<&Path>,
+) -> Result<Vec<x25519::Recipient>, Box<dyn Error>> {
+    let mut recipients = Vec::new();
+    let from_file = match file {
+        Some(file) => fs::read_to_string(file)
+            .map_err(|e| format!("cannot read recipient file {}: {e}", file.display()))?,
+        None => String::new(),
+    };
+    for key in keys.iter().map(String::as_str).chain(key_lines(&from_file)) {
+        let recipient = x25519::Recipient::from_str(key)
+            .map_err(|e| format!("bad recipient key `{key}`: {e}"))?;
+        recipients.push(recipient);
+    }
+    if recipients.is_empty() {
+        return Err("no recipient keys given".into());
+    }
+    Ok(recipients)
+}
+
+/// The non-blank lines of `text` that are not comments, trimmed.
+fn key_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
 }
 
 fn read_passphrase_file(path: &Path) -> Result<String, Box<dyn Error>> {

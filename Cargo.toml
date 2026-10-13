@@ -5,7 +5,10 @@ members = [
     "crates/assets",
     "crates/tensors",
     "crates/logs",
+    "crates/genomics",
+    "crates/arrays",
     "crates/cli",
+    "tests",
 ]
 
 [workspace.package]

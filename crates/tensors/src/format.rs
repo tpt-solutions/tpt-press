@@ -14,7 +14,7 @@
 //!
 //! A tensor is split into pieces only at its own element boundaries, so no
 //! piece holds bytes from two tensors. Pieces of one tensor are contiguous in
-//! the piece table, in order. A piece is a zstd frame when `compression` is 1,
+//! the piece table, in order. A piece is a zstd frame when `compression` is 1 (and a shuffled zstd frame when it is 2),
 //! and raw bytes when it is 0.
 
 use std::collections::BTreeMap;
@@ -54,6 +54,11 @@ pub enum Compression {
     Stored,
     /// One zstd frame.
     Zstd,
+    /// One zstd frame of the piece with its bytes regrouped by position within
+    /// each element: all first bytes, then all second bytes, and so on. For
+    /// floats the exponent bytes then sit together, and compress much better.
+    /// Used only for element widths of 2, 4 and 8 bytes.
+    Shuffled,
 }
 
 impl Compression {
@@ -61,6 +66,7 @@ impl Compression {
         match self {
             Compression::Stored => 0,
             Compression::Zstd => 1,
+            Compression::Shuffled => 2,
         }
     }
 
@@ -68,6 +74,7 @@ impl Compression {
         match code {
             0 => Some(Compression::Stored),
             1 => Some(Compression::Zstd),
+            2 => Some(Compression::Shuffled),
             _ => None,
         }
     }
@@ -200,6 +207,20 @@ pub fn read_index_from<R: Read + Seek>(r: &mut R) -> Result<Index> {
         .map_err(map_io)?;
     let mut footer = [0u8; FOOTER_LEN as usize];
     r.read_exact(&mut footer).map_err(map_io)?;
+    let (index_offset, index_len, index_crc) = footer_location(&footer, file_len)?;
+
+    r.seek(SeekFrom::Start(index_offset)).map_err(map_io)?;
+    let mut body = vec![0u8; index_len as usize];
+    r.read_exact(&mut body).map_err(map_io)?;
+    finish_index(&body, index_crc, index_offset)
+}
+
+/// Reads the index's location and checksum from the footer. `file_len` is the
+/// whole file's length, so the footer must end exactly at its end.
+pub fn footer_location(
+    footer: &[u8; FOOTER_LEN as usize],
+    file_len: u64,
+) -> Result<(u64, u32, u32)> {
     if footer[16..20] != FOOTER_MAGIC {
         return Err(Error::Truncated);
     }
@@ -214,15 +235,15 @@ pub fn read_index_from<R: Read + Seek>(r: &mut R) -> Result<Index> {
     {
         return Err(Error::Corrupt("index location is invalid"));
     }
+    Ok((index_offset, index_len, index_crc))
+}
 
-    r.seek(SeekFrom::Start(index_offset)).map_err(map_io)?;
-    let mut body = vec![0u8; index_len as usize];
-    r.read_exact(&mut body).map_err(map_io)?;
-    if crc32fast::hash(&body) != index_crc {
+/// Checks an index's bytes against their checksum, then decodes and checks the index itself.
+pub fn finish_index(body: &[u8], index_crc: u32, index_offset: u64) -> Result<Index> {
+    if crc32fast::hash(body) != index_crc {
         return Err(Error::Corrupt("index checksum mismatch"));
     }
-
-    let index = decode_index(&body)?;
+    let index = decode_index(body)?;
     check_index(&index, index_offset)?;
     Ok(index)
 }

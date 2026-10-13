@@ -7,7 +7,8 @@ use tpt_press_core::codec;
 use crate::dtype;
 use crate::error::{map_io, Error, Result};
 use crate::format::{self, Compression, Index, Piece, TensorEntry, HEADER_LEN, MAX_PIECE_BYTES};
-use crate::{gguf, onnx, safetensors};
+use crate::model::Model;
+use crate::{gguf, onnx, pytorch, safetensors};
 
 /// Options for [`pack`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,14 +46,28 @@ pub struct Stats {
 /// Tensors are read one piece at a time, so memory use is one piece. Each tensor
 /// is split only at its own block boundaries, so no piece holds bytes from two
 /// tensors.
-pub fn pack<R, W>(mut input: R, mut output: W, opts: &PackOptions) -> Result<Stats>
+pub fn pack<R, W>(mut input: R, output: W, opts: &PackOptions) -> Result<Stats>
 where
     R: Read + Seek,
     W: Write,
 {
     codec::validate_level(opts.level)?;
     let model = read_model(&mut input)?;
+    write_archive(&model, &mut input, output, opts)
+}
 
+/// Writes the tensors of `model`, read from `input`, as one archive. `model`
+/// may hold only some of the file's tensors, which is how shards are written.
+pub(crate) fn write_archive<R, W>(
+    model: &Model,
+    input: &mut R,
+    mut output: W,
+    opts: &PackOptions,
+) -> Result<Stats>
+where
+    R: Read + Seek,
+    W: Write,
+{
     output.write_all(&format::header_bytes())?;
     let mut offset = HEADER_LEN;
     let mut stats = Stats::default();
@@ -76,12 +91,7 @@ where
             let mut raw = vec![0u8; len as usize];
             input.read_exact(&mut raw).map_err(map_io)?;
 
-            let packed = codec::compress(&raw, opts.level)?;
-            let (payload, compression) = if packed.len() < raw.len() {
-                (packed, Compression::Zstd)
-            } else {
-                (raw, Compression::Stored)
-            };
+            let (payload, compression) = choose_payload(raw, unit, opts.level)?;
 
             output.write_all(&payload)?;
             index.pieces.push(Piece {
@@ -95,7 +105,7 @@ where
             position += len;
 
             stats.pieces += 1;
-            if compression == Compression::Zstd {
+            if compression != Compression::Stored {
                 stats.compressed_pieces += 1;
             }
         }
@@ -122,13 +132,21 @@ where
 
 /// Reads the model description. GGUF is recognized by its magic. Safetensors and
 /// ONNX have none, so each is tried in turn, and the errors say why neither fit.
-fn read_model<R: Read + Seek>(input: &mut R) -> Result<crate::model::Model> {
+pub(crate) fn read_model<R: Read + Seek>(input: &mut R) -> Result<Model> {
     input.seek(SeekFrom::Start(0)).map_err(map_io)?;
     let mut magic = [0u8; 4];
     let read = input.read(&mut magic).map_err(map_io)?;
     input.seek(SeekFrom::Start(0)).map_err(map_io)?;
     if read == 4 && &magic == b"GGUF" {
         return gguf::parse(input);
+    }
+    // A zip file is a PyTorch checkpoint. Safetensors and ONNX are not zip files.
+    if read == 4 && &magic == b"PK\x03\x04" {
+        return pytorch::parse(input);
+    }
+    // A legacy checkpoint starts with a pickle protocol-2 LONG1 holding the magic number.
+    if read == 4 && magic == [0x80, 0x02, 0x8a, 0x0a] {
+        return pytorch::parse_legacy(input);
     }
     match safetensors::parse(input) {
         Ok(model) => Ok(model),
@@ -141,4 +159,30 @@ fn read_model<R: Read + Seek>(input: &mut R) -> Result<crate::model::Model> {
             })
         }
     }
+}
+
+/// Picks the smallest encoding of a piece: raw, zstd, or, for element widths the
+/// shuffle supports, shuffled zstd. Raw wins ties, so incompressible data is
+/// stored as it is.
+fn choose_payload(raw: Vec<u8>, width: u64, level: i32) -> Result<(Vec<u8>, Compression)> {
+    let zstd = codec::compress(&raw, level)?;
+    let shuffled = if crate::shuffle::supports(width) {
+        Some(codec::compress(
+            &crate::shuffle::shuffle(&raw, width as usize),
+            level,
+        )?)
+    } else {
+        None
+    };
+
+    let mut best = (raw, Compression::Stored);
+    if zstd.len() < best.0.len() {
+        best = (zstd, Compression::Zstd);
+    }
+    if let Some(shuffled) = shuffled {
+        if shuffled.len() < best.0.len() {
+            best = (shuffled, Compression::Shuffled);
+        }
+    }
+    Ok(best)
 }

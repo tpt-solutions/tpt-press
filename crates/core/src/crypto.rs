@@ -39,6 +39,29 @@ pub fn pack_encrypted<R: Read, W: Write>(
     Ok(stats)
 }
 
+/// Packs `input` into an archive that any of `recipients` can open with its
+/// identity. Uses age's X25519 keys, so no passphrase is needed.
+///
+/// The returned [`Stats`] describe the archive before encryption, as in
+/// [`pack_encrypted`].
+pub fn pack_for_recipients<R: Read, W: Write>(
+    input: R,
+    output: W,
+    opts: &PackOptions,
+    recipients: &[age::x25519::Recipient],
+) -> Result<Stats> {
+    if recipients.is_empty() {
+        return Err(Error::InvalidArgument("at least one recipient is needed"));
+    }
+    let recipients = recipients.iter().map(|r| r as &dyn age::Recipient);
+    let encryptor =
+        age::Encryptor::with_recipients(recipients).map_err(|e| Error::Encrypt(e.to_string()))?;
+    let mut writer = encryptor.wrap_output(output)?;
+    let stats = archive::pack(input, &mut writer, opts)?;
+    writer.finish()?;
+    Ok(stats)
+}
+
 /// Opens an archive for reading. Returns a plain reader for an unencrypted
 /// archive. For an encrypted one, `passphrase` is required and the returned
 /// reader yields the decrypted archive bytes.
@@ -60,6 +83,26 @@ pub fn open<'a, R: BufRead + 'a>(
     let reader = decryptor
         .decrypt(std::iter::once(&identity as &dyn age::Identity))
         .map_err(map_decrypt_error)?;
+    Ok(Box::new(Decrypted(reader)))
+}
+
+/// Opens an archive encrypted to recipients, using one of `identities`. An
+/// unencrypted archive is returned as is, as with [`open`].
+pub fn open_with_identities<'a, R: BufRead + 'a>(
+    mut input: R,
+    identities: &[age::x25519::Identity],
+) -> Result<Box<dyn Read + 'a>> {
+    if !is_encrypted(&mut input)? {
+        return Ok(Box::new(input));
+    }
+    if identities.is_empty() {
+        return Err(Error::InvalidArgument(
+            "an identity is needed to open this archive",
+        ));
+    }
+    let decryptor = age::Decryptor::new_buffered(input).map_err(map_decrypt_error)?;
+    let identities = identities.iter().map(|i| i as &dyn age::Identity);
+    let reader = decryptor.decrypt(identities).map_err(map_decrypt_error)?;
     Ok(Box::new(Decrypted(reader)))
 }
 
@@ -97,8 +140,60 @@ fn secret(passphrase: &str) -> SecretString {
 fn map_decrypt_error(e: age::DecryptError) -> Error {
     match e {
         age::DecryptError::DecryptionFailed => Error::DecryptionFailed,
+        age::DecryptError::NoMatchingKeys => Error::NotForThisKey,
         other => Error::Decrypt(other.to_string()),
     }
+}
+
+/// Whether `header`, the first bytes of a file, is an age stream. An encrypted
+/// archive can only be identified this way until it is decrypted.
+pub fn looks_encrypted(header: &[u8]) -> bool {
+    header.starts_with(AGE_MAGIC)
+}
+
+/// A writer that encrypts as it writes, so an archive packed through it never
+/// exists unencrypted. [`EncryptingWriter::finish`] must be called, or the
+/// encrypted stream is truncated and cannot be read.
+pub struct EncryptingWriter<W: Write>(age::stream::StreamWriter<W>);
+
+impl<W: Write> Write for EncryptingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<W: Write> EncryptingWriter<W> {
+    /// Ends the encrypted stream, and returns the underlying writer.
+    pub fn finish(self) -> Result<W> {
+        Ok(self.0.finish()?)
+    }
+}
+
+/// Starts an encrypted stream to `output` that opens with `passphrase`.
+pub fn encrypt_with_passphrase<W: Write>(
+    output: W,
+    passphrase: &str,
+) -> Result<EncryptingWriter<W>> {
+    let encryptor = age::Encryptor::with_user_passphrase(secret(passphrase));
+    Ok(EncryptingWriter(encryptor.wrap_output(output)?))
+}
+
+/// Starts an encrypted stream to `output` that any of `recipients` can open.
+pub fn encrypt_for_recipients<W: Write>(
+    output: W,
+    recipients: &[age::x25519::Recipient],
+) -> Result<EncryptingWriter<W>> {
+    if recipients.is_empty() {
+        return Err(Error::InvalidArgument("at least one recipient is needed"));
+    }
+    let recipients = recipients.iter().map(|r| r as &dyn age::Recipient);
+    let encryptor =
+        age::Encryptor::with_recipients(recipients).map_err(|e| Error::Encrypt(e.to_string()))?;
+    Ok(EncryptingWriter(encryptor.wrap_output(output)?))
 }
 
 #[cfg(test)]

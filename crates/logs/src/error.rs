@@ -54,9 +54,14 @@ pub enum Error {
     /// An option has a value that cannot be used.
     #[error("invalid option: {0}")]
     InvalidOption(&'static str),
+
+    /// The SQL text is invalid, or the engine cannot run it on these records.
+    #[cfg(feature = "strata")]
+    #[error("{0}")]
+    Engine(String),
 }
 
-/// Convenience alias for results using [`Error`].
+/// Convenience alias for results using [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Maps an unexpected end of input to [`Error::Truncated`], and other IO errors to [`Error::Io`].

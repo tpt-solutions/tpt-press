@@ -60,7 +60,7 @@ pub enum Error {
     InvalidOption(&'static str),
 }
 
-/// Convenience alias for results using [`Error`].
+/// Convenience alias for results using [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Maps an unexpected end of input to [`Error::Truncated`], and other IO errors to [`Error::Io`].

@@ -12,12 +12,12 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - CI: Windows/Linux/macOS, stable Rust, MSRV = stable minus ~2
 
 ## 0. Project setup & licensing
-- [ ] Check crates.io availability for all `tpt-press-*` names (reserve early)
+- [x] Check crates.io availability for all `tpt-press-*` names. All six (`tpt-press`, and the `-core`, `-assets`, `-tensors`, `-logs`, `-cli` crates) returned 404 from the crates.io API. This is a point-in-time check, and nothing is reserved yet. Reserving means publishing, which needs your decision
 - [x] GitHub remote configured (`origin` → `tpt-solutions/tpt-press`); repo existence on GitHub not verified by me
 - [x] Add `LICENSE-MIT` and `LICENSE-APACHE` (copyright TPT Solutions)
 - [x] Set `license = "MIT OR Apache-2.0"` in every Cargo.toml (workspace inheritance)
 - [x] License section in README + contribution clause (dual-license contributions)
-- [x] Workspace `Cargo.toml`, `rust-toolchain.toml`, `rust-version` (MSRV). Set to `1.96` as a placeholder; confirm against the real stable-minus-2 at release time
+- [x] Workspace `Cargo.toml`, `rust-toolchain.toml`, `rust-version` (MSRV). Set to `1.96`. Confirmed: `cargo +1.96.0 check --workspace --all-targets` passes, with and without the `async` feature. Re-check at each release
 - [x] `rustfmt.toml`, clippy lints (workspace), `#![forbid(unsafe_code)]` in core. Exceptions for memmap2 in assets are still to be decided in Phase 3
 - [x] `deny.toml` (licenses/advisories/bans/sources); `cargo deny check` passes. `cargo-audit` config not added (deny covers advisories)
 - [x] `.gitignore` (pre-existing), `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`
@@ -27,15 +27,15 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 ### tpt-press-core
 - [x] Error types (`thiserror`): `Io`, `Zstd`, `OutputTooLarge`, `InvalidArgument`
 - [x] `Pressable` trait (chunk size, level, overridable `split`)
-- [ ] `ArchiveFormat` trait (header, index, metadata). Format v1 header and frame layout are implemented in `format.rs`, but not yet behind a trait
-- [x] Zstd wrapper: levels 1..=22 validated. Dictionary support not yet
+- [x] `ArchiveFormat` trait (`tpt_press_core::ArchiveFormat`): magic, version and recognition per format. Each crate has a marker (`GenericArchive`, `LogsArchive`, `TensorsArchive`, `AssetsArchive`), and the CLI detects formats through them. Header and index encoding stay in each crate
+- [x] Zstd wrapper: levels 1..=22 validated. Dictionary support: `pack --dictionary BYTES` trains on the first 4 MiB and sets header flag bit 0. The dictionary is written after the header, and each frame is compressed with it. Skipped when the sample is too small
 - [x] Parallel chunker (rayon): fixed-size chunks, order preserved
-- [ ] Parallel chunker: content-defined chunking
+- [x] Parallel chunker: content-defined chunking (`Chunking::ContentDefined`, `pack --content-defined`). Gear rolling hash, as in FastCDC, with boundaries between a quarter and four times the average. Frames are unchanged, so no format bump. An insertion moves only nearby chunks (tested: 90% of chunks survive it, against almost none for fixed chunks)
 - [x] Streaming Read -> parallel compress -> Write, bounded memory (`archive::pack` / `archive::unpack`, batches of 2 chunks per thread). The in-memory `compress_chunks` API still exists
-- [x] Passphrase encryption with `age` 0.12 (`crypto.rs`). Whole archive wrapped in an age stream (age encrypts in 64 KiB authenticated chunks), so the header flag planned earlier is not needed. Encrypted archives are detected by age's magic. Work factor on decrypt is capped at 20 (~1 GiB). Recipient-key mode not yet
+- [x] Passphrase encryption with `age` 0.12 (`crypto.rs`). Whole archive wrapped in an age stream (age encrypts in 64 KiB authenticated chunks), so the header flag planned earlier is not needed. Encrypted archives are detected by age's magic. Work factor on decrypt is capped at 20 (~1 GiB). Recipient keys: `pack --recipient` and `--recipient-file` encrypt to age X25519 public keys, `unpack` and `inspect` take `--identity`, and `keygen` writes an identity file. A key-encrypted archive cannot be opened with a passphrase, and the reverse holds
 - [x] Tampering and wrong passphrase are detected. Wrong passphrase gives "decryption failed"; damage gives "archive is damaged or was altered"
 - [x] Checksums per chunk (CRC32 over compressed payload, verified before decompression)
-- [x] Decompression-bomb guard (per-chunk output cap) and chunk size limits. Archive-wide limits are still open
+- [x] Decompression-bomb guard (per-chunk output cap) and chunk size limits. Archive-wide limit: `UnpackOptions::max_total_size` (`unpack --max-output`), off by default
 - [x] Unit tests (codec, chunker, format header/frame). Integration tests in `crates/core/tests/archive.rs` (13: round-trips, corruption, truncation, limits). Property tests in `crates/core/tests/properties.rs` (3: round-trip, corruption, truncation)
 - [x] Truncated archives return `Error::Truncated` ("archive is truncated")
 ### tpt-press-cli (skeleton)
@@ -53,10 +53,10 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - [x] Block-level time-range index. Each block stores its min and max timestamp, and records without one are always read
 - [x] Query API: `--from/--to` (RFC 3339), `--columns` (in order). JSONL keys missing from a record output as `null`
 - [x] CLI `pack-logs` and `query` (records to stdout, summary to stderr). Deviation from spec: `pack-logs <input> <output>` and `query <archive>` rather than `pack <format> ...`
-- [ ] Optional `strata` feature: `query --sql` via tpt-strata (note: no OR/IN/LIKE/timestamp type yet)
-- [ ] Benchmarks: ratio with vs without dictionary (ratio measured on a sample; no formal benchmark yet)
+- [x] Optional `strata` feature: `query --sql` via tpt-strata. The crate is `tpt-solutions/tpt-strata` on GitHub, which is not on crates.io, so it is a git dependency pinned to commit `0439970`. Build with `--features strata` (`tpt-press-logs` and `tpt-press-cli`). Types are inferred per column, and all-null columns are left out. The result is held in memory. The engine's own limits apply (no OR, IN, LIKE, or timestamp type). See the publishing note in section 6
+- [x] Benchmarks: ratio with vs without dictionary. `pack-logs --no-dictionary` added for this. On the 57.7 MB generated corpus the dictionary made the archive 7.7% larger and the pack slower (median of three). See `docs/benchmarks.md`
 - [x] Tests proving query decompresses only relevant blocks (`time_range_skips_blocks_it_does_not_need`, and on a 1M-record log a one-hour window read 115 of 317 blocks)
-- [ ] Logs archives do not support passphrase encryption yet. `pack-logs` has no `--encrypt`
+- [x] Logs archives support encryption: `pack-logs --encrypt`, `--passphrase-file`, `--recipient`, `--recipient-file`. `query` and `inspect` take `--passphrase-file` or `--identity`. Decision taken: an encrypted archive is decrypted into memory for a query, and nothing is written to disk. Memory use is about the archive size, so very large logs need that much RAM
 - [x] `inspect` works on logs archives: format, record and block counts, columns, time range, dictionary size, and ratio. It reads block directories, not records. Its ratio compares column data to the archive, so it differs from the ratio `pack-logs` prints, which compares the original file. `--chunks` is refused for logs
 - [ ] `unpack` does not apply to logs archives. Use `query` to read them back
 - [x] Output is rebuilt from columns. Requested columns keep their order. Whole JSON records have keys sorted, and whitespace is normalized, so the text can differ from the input. The values are the same. Storing the raw line would restore byte-exact output but roughly doubles storage. CSV rows are re-quoted, so quoting can differ too
@@ -79,28 +79,28 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - [x] safetensors parser: header checks, dtype sizes, shape against byte range, sorted tensor names. Also a writer, used by `unpack-tensors`
 - [x] GGUF parser (versions 2 and 3). Reads metadata, tensor directory and alignment. Packs with `pack-tensors` (detected from the file's first bytes). Plain types and the Q4/Q5/Q8 and K-quant block types are sized. Other GGML types are refused. Tested on synthetic files built from the GGUF layout, not on files from llama.cpp. Metadata arrays are stored as their length only. GGUF archives cannot be unpacked to safetensors while they hold quantized tensors
 - [x] ONNX parser. Reads the protobuf wire format directly, without `prost`. Weights are the graph's initializers, stored inline in `raw_data`. Their file locations are recorded, not read, so packing streams them like safetensors. Refused: external data, typed `*_data` fields, and string tensors. Tested with hand-encoded protobuf files, not with real ONNX models. `pack-tensors` detects it (GGUF by magic, then safetensors, then ONNX). Also in the fuzz target and the random-input tests
-- [ ] PyTorch pickle: restricted allowlist reader, never executes, rejects unknown opcodes (last) (not started)
+- [x] PyTorch pickle: `torch.save` zip and legacy checkpoints are read by a restricted pickle interpreter (`pickle.rs`, `pytorch.rs`). Only a fixed set of opcodes runs, and only allowlisted globals are called. Other values are refused rather than dropped. Each tensor must be contiguous in an uncompressed storage. Tested with hand-built checkpoints, since torch is not installed here. Tested on real checkpoints in both formats: the zip format on `hf-internal-testing/tiny-random-gpt2`, and the legacy format on `sshleifer/tiny-gpt2`. In each, the embedding tensor matches the original file byte for byte. The legacy non-zip format is read too, and was checked against `sshleifer/tiny-gpt2`
 - [x] Tensor-boundary chunking. Tensors are split only at element boundaries, and pieces are at most 16 MiB. No frame mixes two tensors. Pieces are zstd, or raw when compression does not shrink them
 - [x] Metadata-only read: opening an archive reads only the footer and index. `inspect` reports tensors, parameters, dtypes and metadata without touching the data
-- [ ] tokio async sharded streaming (network source). Not started: the reader is synchronous and works on any `Read + Seek`. Async streaming would wrap it
+- [x] tokio async streaming (feature `async`): `AsyncArchive` reads the footer and index by seek, then fetches each piece by range. Sharding: `pack-tensors --shard-size` writes a manifest and shards, and `ShardedArchive` reads them asynchronously, one range-readable source per shard. The network transport is left to the caller, who supplies any `AsyncRead + AsyncSeek`
 - [x] Integration test: load into a mock GPU buffer chunk-by-chunk (`loads_a_tensor_chunk_by_chunk_into_a_device_buffer`), with a 2-piece tensor
-- [x] Measured: 200 MB single tensor, raw random data. Pack 501 ms, unpack 732 ms, `inspect --verify` ok. Data section identical after round-trip. Compressible weights not measured yet
-- [ ] CLI `inspect`/`query` support for tensors
+- [x] Measured: 200 MB single tensor, raw random data. Pack 501 ms, unpack 732 ms, `inspect --verify` ok. Data section identical after round-trip. Compressible weights: see the bf16 checkpoint measurement in `docs/benchmarks.md` (28% saved)
+- [x] CLI `inspect` (`--tensors` lists each tensor) and `query <archive> <name>` (writes one tensor's raw bytes, to stdout or `--output`), for tensor and sharded archives
 
 ## 5. Cross-cutting
 - [x] `inspect` command for the generic format: totals, ratio, chunk map (`--chunks`), checksums verified, payloads not decompressed. Domain metadata (tensors, logs) still to come
-- [ ] Format auto-detection in CLI
-- [x] Fuzz targets (cargo-fuzz) for the readers: `core_unpack`, `logs_query`, `tensors_read`, `assets_open` in `fuzz/`. Run under nightly on Linux (WSL). Each ran about 90 s with no crashes: 310k, 715k, 4.6M and 928k inputs. Property tests also cover each crate (`tests/hostile_input.rs`). Not run in CI, and no seed corpus yet. Earlier review fixed two allocation risks: an asset's declared size and a logs block's declared length are now checked before allocation
-- [ ] Memory-safety review of all `unsafe` (mmap)
-- [ ] Cross-crate integration tests in `tests/`
-- [ ] Rustdoc for all public APIs; examples
-- [ ] Format specs documented in `docs/`
+- [x] Format auto-detection in CLI. `inspect` identifies all four archive types from their magic (`--verify`, and the `--chunks` refusal, apply to each). `unpack` on a logs, tensors or assets archive fails and names the subcommand to use. `pack` still takes a subcommand per input kind
+- [x] Fuzz targets (cargo-fuzz) for the readers: `core_unpack`, `logs_query`, `tensors_read`, `assets_open`, `tensors_pytorch`, `tensors_manifest` in `fuzz/`. Run under nightly on Linux (WSL). Each ran about 90 s with no crashes: 310k, 715k, 4.6M and 928k inputs. Property tests also cover each crate (`tests/hostile_input.rs`). Not run in CI, and no seed corpus yet. Earlier review fixed two allocation risks: an asset's declared size and a logs block's declared length are now checked before allocation
+- [x] Memory-safety review of all `unsafe` (mmap). One `unsafe` block in the workspace, in `assets/src/reader.rs`. Sound under its documented precondition (file not modified while mapped). See `docs/unsafe-review.md`
+- [x] Cross-crate integration tests in `tests/`. The directory is now a workspace member, `tpt-press-tests`, so `cargo test --workspace` runs its six tests. They cover round trips across crates, format recognition, sharded and async reads, and encryption
+- [x] Rustdoc for all public APIs; examples. `cargo doc --workspace --no-deps` has zero warnings, and `missing_docs` is enforced by clippy. Runnable examples: `core/examples/round_trip.rs`, `logs/examples/query_time_range.rs`, `tensors/examples/shard_model.rs`
+- [x] Format specs documented in `docs/formats.md` (all four archive types, plus the age wrapper). Checked against each crate's `format.rs`
 
 ## 6. Phase 5: Polish & release
-- [ ] README with benchmarks vs tar.gz, zip, plain zstd
-- [x] GitHub Actions (`.github/workflows/ci.yml`): fmt, clippy and tests on Windows, Linux and macOS, plus cargo-deny. Written but not yet run on GitHub. MSRV job not added
-- [ ] Release automation / CHANGELOG
-- [ ] Publish crates in order: core -> logs/assets/tensors -> cli
+- [~] README with benchmarks vs tar.gz, zip, plain zstd. Done: zip (deflate 6 and 9) and plain zstd (levels 3 and 19) are measured in `docs/benchmarks.md` on a seeded 57 MB log corpus, with `cli/examples/compare_formats.rs`. The README links there. Still open: multi-run variance. Every row is one run, so differences under about 10% are noise
+- [x] GitHub Actions (`.github/workflows/ci.yml`): fmt, clippy and tests on Windows, Linux and macOS, plus cargo-deny. Written but not yet run on GitHub. Now also runs clippy and tests with the `async` feature, and has an MSRV job (Rust 1.96.0, `cargo check`)
+- [~] Release automation / CHANGELOG. `CHANGELOG.md` is written by hand. `.github/workflows/release.yml` runs on version tags: it tests, builds the CLI on three OSes, and uploads the binaries. It does not publish. Not run on GitHub yet
+- [ ] Publish crates in order: core -> logs/assets/tensors/genomics/arrays -> cli. **Blocked for logs and cli:** crates.io rejects git dependencies, even optional ones, and `tpt-press-logs` and `tpt-press-cli` both depend on tpt-strata from git. Either publish `tpt-strata` to crates.io first (it has no external dependencies), or drop the `strata` feature before publishing. genomics and arrays have no git dependencies
 - [ ] Tag v0.1.0
 
 ## 7. Future domains (post-v0.1)
@@ -109,12 +109,12 @@ Non-goals: no image/audio/video recompression. ML datasets store image blobs opa
 ### 7a. Time-series & metrics (extend `tpt-press-logs` or sibling `tpt-press-timeseries`)
 - [ ] Decide: new input format in logs vs separate crate
 - [ ] Parsers: Prometheus text/remote-write dumps, OpenTelemetry JSON, CSV with timestamp column
-- [ ] Delta-of-delta timestamp encoding
-- [ ] XOR (Gorilla-style) float encoding
+- [x] Delta-of-delta timestamp encoding. `logs/src/gorilla.rs` (Gorilla bit scheme, with tests). Beats zstd on jittered and exact timestamps. Not yet wired into the logs format
+- [~] XOR (Gorilla-style) float encoding. Implemented in `logs/src/gorilla.rs`, round-trips NaN, infinities and signed zeros. Measured: worse than plain zstd on quantised readings (27.7 against about 5.3 bits per value), and worse than shuffle-plus-zstd on full-precision floats. Decision needed: a per-column choice between plain zstd and shuffle-plus-zstd, not XOR, for floats. Not wired in
 - [ ] Per-column dictionaries for labels/tags
 - [ ] Reuse block/column directory and time-range index from `logs` (block.rs, inspect.rs)
 - [ ] Query by time range and series/label; `inspect` support
-- [ ] Benchmarks vs plain zstd and Parquet
+- [~] Benchmarks vs plain zstd and Parquet. zstd and the shuffle are measured in `docs/benchmarks.md`. Parquet is not measured, since no Parquet tool is installed here
 
 ### 7b. ML datasets (`tpt-press-datasets`, builds on `.tpa` + tensors streaming)
 - [ ] Depends on Phase 3 (`.tpa` index/mmap) and Phase 4 (async sharded streaming)
@@ -126,36 +126,37 @@ Non-goals: no image/audio/video recompression. ML datasets store image blobs opa
 - [ ] Benchmarks: sample throughput vs tar shards
 
 ### 7c. Genomics (`tpt-press-genomics`; needs domain review)
-- [ ] FASTA/FASTQ parsers (split into ID, sequence, quality columns)
-- [ ] 2-bit nucleotide packing + context-model/zstd for sequence; quality-score modelling
+- [x] FASTA/FASTQ parsers (split into ID, sequence, quality columns). `crates/genomics`, format `TPGN` v1, documented in `docs/formats.md`. Strict: refuses input it cannot return byte for byte, and names the line
+- [~] Sequence context model. Done: bases are coded as two binary decisions, with seven context orders (2 to 16) mixed by an integer-only logistic mixer. E. coli K-12 codes at 1.92 bits per base, against the 2-bit floor of 2.00 and zstd -19's 2.25. The 2-bit packing stays as a fallback, and the writer keeps the smaller. Not done: a reverse-complement model, which usually helps DNA, and an SSE stage. Speed is about 2.4 MB/s, which is the next thing to improve
+- [~] Quality-score modelling. Done: a context-mixed coder over the previous one to three symbols and the position. On a synthetic quality process it is about 1% above that process's empirical entropy, and 22% below zstd -19 on the same qualities. It is not yet measured on real FASTQ, and none is available here
 - [ ] VCF as a stretch goal
-- [ ] Region/read-range index for random access
-- [ ] Compare against bgzip and CRAM
-- [ ] Find a domain reviewer before committing to the format
+- [x] Region/read-range index for random access. `fetch` finds a record by name through a sorted name-hash lookup stored in the index, reads only the block that holds it, and returns a 1-based inclusive range. A record is never split across blocks, so a block can be large. Block size trades archive size against how much `fetch` decodes
+- [~] Compare against bgzip and CRAM. Done: gzip, zip and plain zstd on E. coli and on a 464-contig split (`docs/benchmarks.md`). Not done: bgzip and CRAM, which are not installed here
+- [ ] Find a domain reviewer before committing to the format. **Open.** Version 1 was written without one, so the layout is not yet reviewed by someone who works with sequence data
 - [ ] SIMD-friendly parts: 2-bit packing, FASTQ column split and quality-score modelling (see 7g)
 
 ### 7d. Prerequisites that make any new domain cheaper
-- [ ] `ArchiveFormat` trait (already open in Phase 1)
-- [ ] CLI format auto-detection (already open in Section 5)
-- [ ] Content-defined chunking (already open in Phase 1)
+- [x] `ArchiveFormat` trait (done in Phase 1)
+- [x] CLI format auto-detection (done in Section 5)
+- [x] Content-defined chunking (done in Phase 1)
 
 ### 7e. Lossless model-weight compression (extend `tpt-press-tensors`)
 Lossless only: output is byte-identical after unpack. Lossy quantization is a non-goal.
 - [ ] Literature check first: ZipNN, DFloat11 and newer work, so we build on published results
-- [ ] Float-aware codec for bf16/fp16/fp8: split exponent and mantissa streams, entropy-code them (ANS or Huffman). Target about 25-35% savings. Hook in at tensor-boundary chunking (`crates/tensors/src/writer.rs`) with a per-piece codec flag in the frame format (`crates/tensors/src/format.rs`). Keep the raw fallback when it does not shrink
-- [ ] Benchmarks on real bf16 checkpoints (Llama-class) vs plain zstd; put numbers in the README. Also closes the Phase 4 note "compressible weights not measured yet"
+- [~] Float-aware codec for bf16/fp16/fp8. Done: a byte-plane shuffle with zstd (piece code 2) for 2, 4 and 8-byte elements, chosen per piece when it is smaller. It saves 28% on SmolLM2-135M (plain zstd: 22%), and round-trips exactly. Not done: the exponent/mantissa split with ANS or Huffman, and fp8. Original plan: split exponent and mantissa streams, entropy-code them (ANS or Huffman). Target about 25-35% savings. Hook in at tensor-boundary chunking (`crates/tensors/src/writer.rs`) with a per-piece codec flag in the frame format (`crates/tensors/src/format.rs`). Keep the raw fallback when it does not shrink
+- [~] Benchmarks on real bf16 checkpoints (Llama-class) vs plain zstd; put numbers in the README. Done for SmolLM2-135M, a Llama-style model, in `docs/benchmarks.md`. Synthetic Gaussian bf16 is also measured in `docs/benchmarks.md` (generic compressors save about 21%, `pack-tensors` 22 to 23%), but no real checkpoint is available here. Also closes the Phase 4 note "compressible weights not measured yet"
 - [ ] Training checkpoints: fp32 master weights, Adam moments (`m`, `v`), step counter, scheduler and RNG state. Delta against the previous checkpoint plus the float codec. Lossless only, since a resumed run must be exact. Needs PyTorch/DeepSpeed/safetensors checkpoint layouts (depends on the open PyTorch pickle reader in Phase 4). Benchmark on a real small-model run
 - [ ] Delta compression against a base model: fine-tunes, merges and training checkpoints stored as differences from a parent, plus dedup of identical tensors across archives. Needs a way to reference the base archive and a clear error when it is missing
 - [ ] Entropy coding for quantized formats: GGUF scales, zero-points, indices and higher-precision tensors (small gain, cheap once the float codec exists)
 - [ ] Stretch: streaming decode at load time (layer by layer) so run-time memory also shrinks, as DFloat11 shows for bf16. Needs fast SIMD/GPU decoders. Only after the float codec and benchmarks show strong numbers
 
 ### 7f. Scientific arrays (`tpt-press-arrays`; needs domain review)
-- [ ] Decide scope: lossless first (float byte-shuffle or XOR-delta, then zstd). Error-bounded lossy (SZ/ZFP-style) only as an explicit opt-in, never the default
-- [ ] Input formats: raw n-dim arrays, NumPy `.npy`/`.npz`, Zarr. HDF5/NetCDF as a stretch (large parsers, so a read-only subset first)
-- [ ] Chunked layout with a per-chunk index for random-access slicing (reuse the `.tpa` and tensors chunk + index design)
-- [ ] Predictors: delta along an axis, Lorenzo-style neighbour prediction, XOR of float bit patterns
-- [ ] Benchmarks vs Blosc, zstd with shuffle, and Zarr defaults
-- [ ] Find a domain reviewer before fixing the format
+- [x] Decide scope: lossless first (float byte-shuffle or XOR-delta, then zstd). Done: only lossless storage is implemented. Lossy is not implemented, and is not planned as a default
+- [~] Input formats: raw n-dim arrays and NumPy `.npy` are done (`crates/arrays`, format `TPAR` v1). Not done: `.npz`, Zarr, HDF5/NetCDF. Fortran order is refused, and big-endian data is refused
+- [x] Chunked layout with a per-chunk index for random-access slicing. Chunks are stored at their real size at the edges. `read_slice` decodes only the chunks it touches
+- [~] Predictors. Done: XOR and subtraction deltas, each along the last axis or the row above, with byte shuffle. The writer picks the filter per chunk from six. Subtraction is the one that matters for smooth floats and slowly changing integers. Not done: a predictor that uses several axes at once (Lorenzo), and a choice of axis other than the last two
+- [~] Benchmarks vs Blosc, zstd with shuffle, and Zarr defaults. Done against gzip, zip and plain zstd, on a synthetic float field (`docs/benchmarks.md`). Not done: Blosc and Zarr, which are not installed here, and any real dataset
+- [ ] Find a domain reviewer before fixing the format. **Open.** Version 1 was written without one
 
 ### 7g. tpt-simd integration (optional)
 Optional `simd` cargo feature. A scalar fallback always exists, and results must be bit-identical to it.

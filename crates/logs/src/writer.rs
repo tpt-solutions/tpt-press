@@ -39,6 +39,9 @@ pub struct PackOptions {
     pub block_size: usize,
     /// zstd compression level, in `1..=22`.
     pub level: i32,
+    /// Train a dictionary from the first 10% of the input, and compress with
+    /// it. Off makes every block compress on its own.
+    pub dictionary: bool,
 }
 
 impl Default for PackOptions {
@@ -48,6 +51,7 @@ impl Default for PackOptions {
             timestamp_field: "timestamp".to_owned(),
             block_size: DEFAULT_BLOCK_SIZE,
             level: codec::DEFAULT_LEVEL,
+            dictionary: true,
         }
     }
 }
@@ -91,7 +95,11 @@ pub fn pack<R: BufRead + Seek, W: Write>(
     let data_start = input.stream_position()?;
     let schema = Schema::new(opts.format, &opts.timestamp_field, &csv_header)?;
 
-    let dictionary = train_dictionary(&mut input, &schema, input_bytes, data_start)?;
+    let dictionary = if opts.dictionary {
+        train_dictionary(&mut input, &schema, input_bytes, data_start)?
+    } else {
+        Vec::new()
+    };
 
     let header = Header {
         format: opts.format,

@@ -132,6 +132,12 @@ impl Schema {
         }
     }
 
+    /// The record format, which decides how cells are read.
+    #[cfg(feature = "strata")]
+    pub fn format(&self) -> Format {
+        self.format
+    }
+
     /// The name of the column that holds timestamps.
     pub fn timestamp_field(&self) -> &str {
         &self.timestamp_field

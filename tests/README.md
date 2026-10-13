@@ -1,4 +1,5 @@
 # Integration tests
 
-Tests here span multiple crates (round-trips through the CLI, cross-domain
-behavior). Unit tests stay inside each crate's `src/`.
+This package (`tpt-press-tests`) holds tests that span more than one crate, and
+it is a workspace member, so `cargo test --workspace` runs them. Unit tests stay
+inside each crate's `src/`. CLI end-to-end tests live in `crates/cli/tests/`.

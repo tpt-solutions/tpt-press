@@ -15,8 +15,9 @@ workspace = true
 
 [features]
 default = []
-# Enables `query --sql` via tpt-strata (added in Phase 2).
-strata = []
+# Enables `query --sql` via tpt-strata. tpt-strata is not on crates.io yet, so
+# it comes from git, pinned to a commit.
+strata = ["dep:tpt-strata"]
 
 [dependencies]
 crc32fast = "1.5.2"
@@ -26,6 +27,7 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 thiserror = "2.0.21"
 time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tpt-press-core = { path = "../core", version = "0.1.0" }
+tpt-strata = { version = "1.0.1", git = "https://github.com/tpt-solutions/tpt-strata", rev = "0439970ca3fd371be2d2696f308445cf5987ca4f", optional = true }
 
 [dev-dependencies]
 proptest = "1.12.0"

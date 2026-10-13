@@ -6,7 +6,8 @@
 use std::io::{BufReader, Cursor};
 
 use tpt_press_core::{
-    inspect, open_archive, pack, pack_encrypted, unpack, Error, PackOptions, UnpackOptions,
+    inspect, open_archive, open_with_identities, pack, pack_encrypted, pack_for_recipients, unpack,
+    Error, PackOptions, UnpackOptions,
 };
 
 const PASSPHRASE: &str = "correct horse battery staple";
@@ -107,4 +108,75 @@ fn inspect_works_through_decryption() {
     let reader = open_archive(BufReader::new(Cursor::new(&encrypted)), Some(PASSPHRASE)).unwrap();
     let inspection = inspect(reader).unwrap();
     assert_eq!(inspection.stats.uncompressed_bytes, data.len() as u64);
+}
+
+#[test]
+fn recipient_keys_open_the_archive_and_nothing_else() {
+    use age::x25519::Identity;
+
+    let alice = Identity::generate();
+    let bob = Identity::generate();
+    let stranger = Identity::generate();
+    let data = sample();
+
+    let mut archive = Vec::new();
+    pack_for_recipients(
+        Cursor::new(&data),
+        &mut archive,
+        &small_chunks(),
+        &[alice.to_public(), bob.to_public()],
+    )
+    .unwrap();
+    assert!(!archive.windows(MARKER.len()).any(|w| w == MARKER));
+
+    // Either recipient can open it.
+    for identity in [&alice, &bob] {
+        let mut restored = Vec::new();
+        let reader = open_with_identities(
+            BufReader::new(Cursor::new(&archive)),
+            std::slice::from_ref(identity),
+        )
+        .unwrap();
+        unpack(reader, &mut restored, &UnpackOptions::default()).unwrap();
+        assert_eq!(restored, data);
+    }
+
+    // A key that is not a recipient is refused, with a message that says so.
+    let err = open_with_identities(BufReader::new(Cursor::new(&archive)), &[stranger])
+        .err()
+        .expect("a stranger must not open the archive");
+    assert!(matches!(err, Error::NotForThisKey), "{err}");
+
+    // No key at all is refused too.
+    assert!(matches!(
+        open_with_identities(BufReader::new(Cursor::new(&archive)), &[]),
+        Err(Error::InvalidArgument(_))
+    ));
+
+    // A passphrase cannot open a key-encrypted archive.
+    assert!(matches!(
+        open_archive(BufReader::new(Cursor::new(&archive)), Some(PASSPHRASE)),
+        Err(Error::NotForThisKey)
+    ));
+}
+
+#[test]
+fn recipient_mode_needs_at_least_one_recipient() {
+    let mut out = Vec::new();
+    assert!(matches!(
+        pack_for_recipients(Cursor::new(b"x"), &mut out, &small_chunks(), &[]),
+        Err(Error::InvalidArgument(_))
+    ));
+}
+
+#[test]
+fn plain_archives_open_with_identities_unchanged() {
+    let data = b"not encrypted at all".to_vec();
+    let mut archive = Vec::new();
+    pack(Cursor::new(&data), &mut archive, &small_chunks()).unwrap();
+    let identity = age::x25519::Identity::generate();
+    let mut restored = Vec::new();
+    let reader = open_with_identities(BufReader::new(Cursor::new(&archive)), &[identity]).unwrap();
+    unpack(reader, &mut restored, &UnpackOptions::default()).unwrap();
+    assert_eq!(restored, data);
 }

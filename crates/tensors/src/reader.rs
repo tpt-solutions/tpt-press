@@ -5,8 +5,10 @@ use std::io::{Read, Seek, SeekFrom};
 
 use tpt_press_core::codec;
 
+use crate::dtype;
 use crate::error::{map_io, Error, Result};
 use crate::format::{self, Compression, Index, Piece, TensorEntry, HEADER_LEN, MAX_PIECE_BYTES};
+use crate::shuffle;
 
 /// An open tensor archive. Opening reads only the header, footer and index.
 pub struct Archive<R> {
@@ -58,10 +60,11 @@ impl<R: Read + Seek> Archive<R> {
             .tensor(name)
             .ok_or_else(|| Error::NoSuchTensor(name.to_owned()))?
             .clone();
+        let width = dtype::block_bytes(&tensor.dtype)?;
         let first = tensor.first_piece as usize;
         for i in first..first + tensor.piece_count as usize {
             let piece = self.index.pieces[i];
-            let raw = self.read_piece(&piece, name)?;
+            let raw = self.read_piece(&piece, name, width)?;
             sink(&raw)?;
         }
         Ok(())
@@ -84,46 +87,84 @@ impl<R: Read + Seek> Archive<R> {
     /// Checks every piece's checksum, and decodes every compressed piece to check its length.
     pub fn verify(&mut self) -> Result<()> {
         for tensor in self.index.tensors.clone() {
+            let width = dtype::block_bytes(&tensor.dtype)?;
             let first = tensor.first_piece as usize;
             for i in first..first + tensor.piece_count as usize {
                 let piece = self.index.pieces[i];
-                self.read_piece(&piece, &tensor.name)?;
+                self.read_piece(&piece, &tensor.name, width)?;
             }
         }
         Ok(())
     }
 
     /// Reads one piece, checks its checksum, and decodes it.
-    fn read_piece(&mut self, piece: &Piece, name: &str) -> Result<Vec<u8>> {
-        if piece.raw_len as u64 > MAX_PIECE_BYTES {
-            return Err(Error::Corrupt("piece is larger than the limit"));
-        }
+    fn read_piece(&mut self, piece: &Piece, name: &str, width: u64) -> Result<Vec<u8>> {
+        check_piece_bounds(piece)?;
         self.input
             .seek(SeekFrom::Start(piece.offset))
             .map_err(map_io)?;
         let mut stored = vec![0u8; piece.stored_len as usize];
         self.input.read_exact(&mut stored).map_err(map_io)?;
-        if crc32fast::hash(&stored) != piece.crc32 {
-            return Err(Error::ChecksumMismatch(name.to_owned()));
+        decode_piece(piece, stored, name, width)
+    }
+}
+
+/// Checks a piece's declared sizes before any buffer is allocated for it.
+/// A piece is at most `MAX_PIECE_BYTES`, and never stored larger than its raw
+/// bytes, since the writer only compresses a piece when that makes it smaller.
+pub(crate) fn check_piece_bounds(piece: &Piece) -> Result<()> {
+    if piece.raw_len as u64 > MAX_PIECE_BYTES {
+        return Err(Error::Corrupt("piece is larger than the limit"));
+    }
+    if piece.stored_len > piece.raw_len {
+        return Err(Error::Corrupt("stored piece is larger than its raw data"));
+    }
+    Ok(())
+}
+
+/// Checks a piece's stored bytes against its checksum, then decodes them.
+/// Shared by the blocking and async readers.
+pub(crate) fn decode_piece(
+    piece: &Piece,
+    stored: Vec<u8>,
+    name: &str,
+    width: u64,
+) -> Result<Vec<u8>> {
+    check_piece_bounds(piece)?;
+    if crc32fast::hash(&stored) != piece.crc32 {
+        return Err(Error::ChecksumMismatch(name.to_owned()));
+    }
+    match piece.compression {
+        Compression::Shuffled => {
+            if !shuffle::supports(width) {
+                return Err(Error::Corrupt(
+                    "shuffled piece for an unsupported element width",
+                ));
+            }
+            let raw = codec::decompress(&stored, piece.raw_len as usize)?;
+            if raw.len() != piece.raw_len as usize || raw.len() % width as usize != 0 {
+                return Err(Error::Corrupt(
+                    "decoded piece length does not match its index",
+                ));
+            }
+            Ok(shuffle::unshuffle(&raw, width as usize))
         }
-        match piece.compression {
-            Compression::Stored => {
-                if stored.len() != piece.raw_len as usize {
-                    return Err(Error::Corrupt(
-                        "stored piece length does not match its index",
-                    ));
-                }
-                Ok(stored)
+        Compression::Stored => {
+            if stored.len() != piece.raw_len as usize {
+                return Err(Error::Corrupt(
+                    "stored piece length does not match its index",
+                ));
             }
-            Compression::Zstd => {
-                let raw = codec::decompress(&stored, piece.raw_len as usize)?;
-                if raw.len() != piece.raw_len as usize {
-                    return Err(Error::Corrupt(
-                        "decoded piece length does not match its index",
-                    ));
-                }
-                Ok(raw)
+            Ok(stored)
+        }
+        Compression::Zstd => {
+            let raw = codec::decompress(&stored, piece.raw_len as usize)?;
+            if raw.len() != piece.raw_len as usize {
+                return Err(Error::Corrupt(
+                    "decoded piece length does not match its index",
+                ));
             }
+            Ok(raw)
         }
     }
 }

@@ -40,10 +40,32 @@ pub struct QueryStats {
 /// a time range. Records without a parseable timestamp are always included.
 /// Output records are in archive order.
 pub fn query<R: Read + Seek, W: Write>(
-    mut input: R,
+    input: R,
     mut output: W,
     query: &Query,
 ) -> Result<QueryStats> {
+    let omit_absent = query.columns.is_none();
+    let stats = scan(input, query, |schema, names, cells| {
+        let row = schema.render(names, cells, omit_absent)?;
+        output.write_all(&row)?;
+        output.write_all(b"\n")?;
+        Ok(())
+    })?;
+    output.flush()?;
+    Ok(stats)
+}
+
+/// Calls `visit` for each record that matches `query`, in archive order.
+///
+/// `visit` gets the schema, the column names and one cell per name. A cell is
+/// `None` when the record's block has no such column. Cells are the raw JSON
+/// text or CSV field text, as stored. This is the shared path for [`query`]
+/// and for the SQL surface.
+pub(crate) fn scan<R, F>(mut input: R, query: &Query, mut visit: F) -> Result<QueryStats>
+where
+    R: Read + Seek,
+    F: FnMut(&Schema, &[String], &[Option<&[u8]>]) -> Result<()>,
+{
     if let (Some(from), Some(to)) = (query.from, query.to) {
         if from > to {
             return Err(Error::InvalidOption("the start time is after the end time"));
@@ -118,14 +140,11 @@ pub fn query<R: Read + Seek, W: Write>(
                         .map(|(_, cells)| cells[i].as_slice())
                 })
                 .collect();
-            let row = schema.render(&output_names, &aligned, query.columns.is_none())?;
-            output.write_all(&row)?;
-            output.write_all(b"\n")?;
+            visit(&schema, &output_names, &aligned)?;
             stats.records_matched += 1;
         }
     }
 
-    output.flush()?;
     Ok(stats)
 }
 

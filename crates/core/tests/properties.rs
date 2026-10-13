@@ -7,7 +7,11 @@ use tpt_press_core::archive::{pack, unpack, PackOptions, UnpackOptions};
 
 fn pack_bytes(data: &[u8], chunk_size: usize, level: i32) -> Vec<u8> {
     let mut out = Vec::new();
-    let opts = PackOptions { chunk_size, level };
+    let opts = PackOptions {
+        chunk_size,
+        level,
+        ..PackOptions::default()
+    };
     pack(Cursor::new(data), &mut out, &opts).unwrap();
     out
 }

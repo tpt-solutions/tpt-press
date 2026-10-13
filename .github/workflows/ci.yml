@@ -23,8 +23,28 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (async feature)
+        run: cargo clippy -p tpt-press-tensors --features async --all-targets -- -D warnings
+      - name: Clippy (strata feature)
+        run: cargo clippy -p tpt-press-logs -p tpt-press-cli --features strata --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace --no-fail-fast
+      - name: Tests (async feature)
+        run: cargo test -p tpt-press-tensors --features async
+      - name: Tests (strata feature)
+        run: cargo test -p tpt-press-logs -p tpt-press-cli --features strata --no-fail-fast
+
+  msrv:
+    name: minimum supported Rust (1.96)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --workspace --all-targets
+      - name: Check (async feature)
+        run: cargo check -p tpt-press-tensors --features async --all-targets
 
   deny:
     name: dependency policy

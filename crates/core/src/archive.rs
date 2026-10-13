@@ -4,13 +4,23 @@
 //! decompressed in parallel with rayon, then written in order. Memory use is
 //! bounded by the batch size, not the input size.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Cursor, Read, Write};
 
 use rayon::prelude::*;
 
 use crate::codec::{self, DEFAULT_LEVEL};
 use crate::error::{Error, Result};
-use crate::format::{self, FrameHeader, FRAME_HEADER_LEN, HEADER_LEN};
+use crate::format::{self, FrameHeader, FRAME_HEADER_LEN, HEADER_LEN, MAX_DICTIONARY_LEN};
+use crate::split::{Chunking, Splitter, MAX_AVERAGE_CHUNK, MIN_AVERAGE_CHUNK};
+
+/// Bytes read from the start of the input to train a dictionary on.
+const SAMPLE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Size of each training sample, which is how zstd is trained.
+const SAMPLE_RECORD: usize = 4096;
+
+/// Least sample that is worth training on. Less gives no dictionary.
+const MIN_SAMPLE_BYTES: usize = 64 * 1024;
 
 /// Default uncompressed bytes per chunk.
 pub const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
@@ -21,17 +31,30 @@ pub const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
 /// Options for [`pack`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackOptions {
-    /// Uncompressed bytes per chunk. Must be in `1..=MAX_CHUNK_SIZE`.
+    /// Uncompressed bytes per chunk. With [`Chunking::Fixed`], every chunk is
+    /// this size. With [`Chunking::ContentDefined`], it is the average, and must
+    /// be a power of two from 256 to 16 MiB.
     pub chunk_size: usize,
+    /// How the input is split into chunks.
+    pub chunking: Chunking,
     /// zstd compression level, in `1..=22`.
     pub level: i32,
+    /// Train a zstd dictionary of at most this many bytes, from the start of
+    /// the input, and compress every chunk with it. Helps when many chunks share
+    /// structure, such as repeated JSON keys. Must be `1..=1 MiB`. The dictionary
+    /// is stored in the archive, so it pays off only on inputs much larger than
+    /// the dictionary. If the start of the input is too small or too uniform to
+    /// train on, the archive is written without one.
+    pub dictionary: Option<usize>,
 }
 
 impl Default for PackOptions {
     fn default() -> Self {
         Self {
             chunk_size: DEFAULT_CHUNK_SIZE,
+            chunking: Chunking::Fixed,
             level: DEFAULT_LEVEL,
+            dictionary: None,
         }
     }
 }
@@ -42,12 +65,18 @@ pub struct UnpackOptions {
     /// Largest uncompressed chunk accepted. Chunks above this are rejected
     /// before any allocation, which protects against hostile headers.
     pub max_chunk_size: usize,
+    /// Largest total output accepted, across all chunks. An archive that would
+    /// unpack to more is refused as soon as the limit is crossed. `None` means no
+    /// limit. Set it when the archive comes from an untrusted source, since each
+    /// chunk is bounded but the number of chunks is not.
+    pub max_total_size: Option<u64>,
 }
 
 impl Default for UnpackOptions {
     fn default() -> Self {
         Self {
             max_chunk_size: MAX_CHUNK_SIZE,
+            max_total_size: None,
         }
     }
 }
@@ -65,26 +94,44 @@ pub struct Stats {
 
 /// Compresses everything from `input` into an archive written to `output`.
 pub fn pack<R: Read, W: Write>(mut input: R, mut output: W, opts: &PackOptions) -> Result<Stats> {
-    if opts.chunk_size == 0 || opts.chunk_size > MAX_CHUNK_SIZE {
-        return Err(Error::InvalidArgument("chunk_size must be 1 to 64 MiB"));
+    match opts.chunking {
+        Chunking::Fixed if opts.chunk_size == 0 || opts.chunk_size > MAX_CHUNK_SIZE => {
+            return Err(Error::InvalidArgument("chunk_size must be 1 to 64 MiB"));
+        }
+        Chunking::ContentDefined
+            if !opts.chunk_size.is_power_of_two()
+                || !(MIN_AVERAGE_CHUNK..=MAX_AVERAGE_CHUNK).contains(&opts.chunk_size) =>
+        {
+            return Err(Error::InvalidArgument(
+                "content-defined average must be a power of two from 256 bytes to 16 MiB",
+            ));
+        }
+        _ => {}
     }
     codec::validate_level(opts.level)?;
 
+    let (dictionary, sampled) = sample_dictionary(&mut input, opts.dictionary)?;
+    // The sampled bytes are replayed in front of the rest of the input.
+    let replay = Cursor::new(sampled).chain(&mut input);
+    let mut splitter = Splitter::new(replay, opts.chunking, opts.chunk_size);
+
     let batch_len = batch_len();
     let mut stats = Stats::default();
-
-    format::write_header(&mut output)?;
-    stats.archive_bytes += HEADER_LEN as u64;
+    format::write_header(&mut output, dictionary.as_deref())?;
+    stats.archive_bytes += (HEADER_LEN + dictionary_block_len(&dictionary)) as u64;
 
     loop {
-        let batch = read_batch(&mut input, opts.chunk_size, batch_len)?;
+        let batch = read_batch(&mut splitter, batch_len)?;
         if batch.is_empty() {
             break;
         }
 
         let packed: Vec<Vec<u8>> = batch
             .par_iter()
-            .map(|chunk| codec::compress(chunk, opts.level))
+            .map(|chunk| match &dictionary {
+                Some(dictionary) => codec::compress_with_dict(chunk, opts.level, dictionary),
+                None => codec::compress(chunk, opts.level),
+            })
             .collect::<Result<_>>()?;
 
         for (raw, comp) in batch.iter().zip(&packed) {
@@ -121,9 +168,9 @@ pub fn unpack<R: Read, W: Write>(
         return Err(Error::InvalidArgument("max_chunk_size must be 1 to 64 MiB"));
     }
 
-    format::read_header(&mut input).map_err(truncated)?;
+    let dictionary = format::read_header(&mut input).map_err(truncated)?;
     let mut stats = Stats {
-        archive_bytes: HEADER_LEN as u64,
+        archive_bytes: (HEADER_LEN + dictionary_block_len(&dictionary)) as u64,
         ..Stats::default()
     };
 
@@ -164,7 +211,15 @@ pub fn unpack<R: Read, W: Write>(
 
         let decoded: Vec<Vec<u8>> = frames
             .par_iter()
-            .map(|(header, payload)| codec::decompress(payload, header.uncompressed_len as usize))
+            .map(|(header, payload)| {
+                let max_output = header.uncompressed_len as usize;
+                match &dictionary {
+                    Some(dictionary) => {
+                        codec::decompress_with_dict(payload, max_output, dictionary)
+                    }
+                    None => codec::decompress(payload, max_output),
+                }
+            })
             .collect::<Result<_>>()?;
 
         let first_index = index - frames.len() as u64;
@@ -173,6 +228,11 @@ pub fn unpack<R: Read, W: Write>(
                 return Err(Error::ChunkCorrupt {
                     index: first_index + offset as u64,
                 });
+            }
+            if let Some(limit) = opts.max_total_size {
+                if stats.uncompressed_bytes + data.len() as u64 > limit {
+                    return Err(Error::ArchiveTooLarge { limit });
+                }
             }
             output.write_all(data)?;
             stats.uncompressed_bytes += data.len() as u64;
@@ -203,6 +263,8 @@ pub struct Inspection {
     /// Totals. `uncompressed_bytes` comes from frame headers and is not
     /// confirmed by decompression. Use [`unpack`] to verify the data.
     pub stats: Stats,
+    /// Size of the zstd dictionary in the header, or 0 if there is none.
+    pub dictionary_bytes: usize,
 }
 
 impl Inspection {
@@ -217,9 +279,10 @@ impl Inspection {
 /// Each payload is still read and checked against its CRC32, so corruption is
 /// reported. Size limits are the same as [`UnpackOptions::default`].
 pub fn inspect<R: Read>(mut input: R) -> Result<Inspection> {
-    format::read_header(&mut input).map_err(truncated)?;
+    let dictionary = format::read_header(&mut input).map_err(truncated)?;
+    let dictionary_bytes = dictionary.as_ref().map_or(0, Vec::len);
     let mut stats = Stats {
-        archive_bytes: HEADER_LEN as u64,
+        archive_bytes: (HEADER_LEN + dictionary_block_len(&dictionary)) as u64,
         ..Stats::default()
     };
     let mut chunks = Vec::new();
@@ -262,7 +325,11 @@ pub fn inspect<R: Read>(mut input: R) -> Result<Inspection> {
         });
     }
 
-    Ok(Inspection { chunks, stats })
+    Ok(Inspection {
+        chunks,
+        stats,
+        dictionary_bytes,
+    })
 }
 
 /// Rejects a frame whose declared sizes exceed the limits, before any allocation.
@@ -302,39 +369,47 @@ fn max_compressed_len(uncompressed: usize) -> usize {
     uncompressed + uncompressed / 128 + 1024
 }
 
-/// Reads up to `max_chunks` chunks of `chunk_size` bytes. A short final chunk
-/// is returned as is. An empty result means end of input.
-fn read_batch<R: Read>(
-    input: &mut R,
-    chunk_size: usize,
-    max_chunks: usize,
-) -> io::Result<Vec<Vec<u8>>> {
+/// Reads up to `max_chunks` chunks from `splitter`. An empty result means end of input.
+fn read_batch<R: Read>(splitter: &mut Splitter<R>, max_chunks: usize) -> io::Result<Vec<Vec<u8>>> {
     let mut batch = Vec::with_capacity(max_chunks);
     while batch.len() < max_chunks {
-        let mut buf = vec![0u8; chunk_size];
-        let filled = read_fill(input, &mut buf)?;
-        if filled == 0 {
-            break;
-        }
-        buf.truncate(filled);
-        batch.push(buf);
-        if filled < chunk_size {
-            break;
+        match splitter.next_chunk()? {
+            Some(chunk) => batch.push(chunk),
+            None => break,
         }
     }
     Ok(batch)
 }
 
-/// Fills `buf` from `r` unless end of input comes first. Returns bytes read.
-fn read_fill<R: Read>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        match r.read(&mut buf[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        }
+/// Bytes the dictionary takes in the header: a length, then the dictionary. Zero without one.
+fn dictionary_block_len(dictionary: &Option<Vec<u8>>) -> usize {
+    dictionary.as_ref().map_or(0, |d| 4 + d.len())
+}
+
+/// Trains a dictionary on the start of the input, and returns it with the bytes
+/// read, which must be replayed before the rest of the input.
+///
+/// A dictionary is optional. If zstd cannot train on the sample, the result is
+/// `None` and the archive is written without one.
+fn sample_dictionary<R: Read>(
+    input: &mut R,
+    max_size: Option<usize>,
+) -> Result<(Option<Vec<u8>>, Vec<u8>)> {
+    let Some(max_size) = max_size else {
+        return Ok((None, Vec::new()));
+    };
+    if max_size == 0 || max_size > MAX_DICTIONARY_LEN {
+        return Err(Error::InvalidArgument("dictionary size must be 1 to 1 MiB"));
     }
-    Ok(filled)
+
+    let mut sample = Vec::new();
+    (&mut *input).take(SAMPLE_BYTES).read_to_end(&mut sample)?;
+    if sample.len() < MIN_SAMPLE_BYTES {
+        return Ok((None, sample));
+    }
+    let records: Vec<&[u8]> = sample.chunks(SAMPLE_RECORD).collect();
+    let dictionary = codec::train_dictionary(&records, max_size)
+        .ok()
+        .filter(|d| !d.is_empty());
+    Ok((dictionary, sample))
 }
