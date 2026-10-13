@@ -2066,8 +2066,11 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "proptest",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tpt-press-core",
+ "zip",
 ]
 
 [[package]]

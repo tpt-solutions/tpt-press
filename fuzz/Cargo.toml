@@ -9,10 +9,10 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-tpt-press-core = { path = "../crates/core" }
-tpt-press-logs = { path = "../crates/logs" }
-tpt-press-assets = { path = "../crates/assets" }
-tpt-press-tensors = { path = "../crates/tensors" }
+tpt-press-core = { path = "../crates/tpt-press-core" }
+tpt-press-logs = { path = "../crates/tpt-press-logs" }
+tpt-press-assets = { path = "../crates/tpt-press-assets" }
+tpt-press-tensors = { path = "../crates/tpt-press-tensors" }
 
 [[bin]]
 name = "core_unpack"

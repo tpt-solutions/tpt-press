@@ -279,6 +279,10 @@ entry  : offset u64 | length u64 | crc32 u32 | filter u8 | pad [u8; 3]
 footer : index offset u64 | index length u64 | index crc32 u32 | "TPRX"
 ```
 
+`.npz` files holding exactly one array are read from their `.npy` member, and the
+archive holds that array. Unpacking gives a `.npy` file, not the zip container. A
+`.npz` with several arrays is refused.
+
 `descr` is a NumPy type string such as `<f4`. Only little-endian f2, f4, f8,
 i1 to i8, u1 to u8, and single-byte b1 are accepted. Fortran order is refused.
 A chunk at the edge of an axis is stored at its real size, not padded.
@@ -296,12 +300,16 @@ axis of the chunk, so "the row above" is `row` elements back.
 - `4` delta+shuffle: each element minus the one before, modulo the element size,
   then shuffled
 - `5` delta-up+shuffle: each element minus the one `row` back, then shuffled
+- `6` lorenzo+shuffle: each element minus its Lorenzo prediction, the sum of its
+  neighbours along each axis with inclusion and exclusion (for two axes,
+  `left + up - upper_left`). A neighbour outside the chunk counts as zero. Chunks
+  of more than four axes are left unpredicted
 
 The XOR filters suit floats, where neighbours share sign and exponent bits. The
 delta filters suit integers that change slowly, and smooth floats too, since
 nearby float bit patterns differ by small amounts.
 
-All six are exact inverses. Since the header keeps the original `.npy` header
+All seven are exact inverses. Since the header keeps the original `.npy` header
 bytes, unpacking a `.npy` archive reproduces the file. Raw input has no header,
 and its bytes are stored in C order.
 

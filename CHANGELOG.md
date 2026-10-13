@@ -6,7 +6,17 @@ archive formats may change between any two versions.
 
 ## [Unreleased]
 
+### Changed
+
+- Crate directories are named after their packages: `crates/tpt-press-core`,
+  `crates/tpt-press-assets`, and so on. Package names were already prefixed.
+- Each published crate has its own `README.md` and `CHANGELOG.md`, and
+  `keywords` and `categories` in its manifest.
+
 ### Added
+
+- Per-crate examples: new runnable examples for every crate, including
+  `examples/` walkthroughs for the CLI (`workflow.ps1` and `workflow.sh`).
 
 - **Generic archives (`tpt-press-core`)**
   - Content-defined chunking (`pack --content-defined`), using a gear rolling hash.
@@ -34,8 +44,9 @@ archive formats may change between any two versions.
   - The parser refuses input it cannot return byte for byte, and names the line. This covers CRLF endings, a missing final newline, changing line widths, blank lines, and a FASTQ `+` line that is not bare or the id.
   - CLI: `pack-genomics`, `unpack-genomics`, `fetch-genomics`. `inspect` detects the format.
 - **Arrays (`tpt-press-arrays`, new crate)**
-  - Chunked storage for NumPy-style arrays (`TPAR`, version 1). Each chunk is stored with the smallest of six lossless filters (none, byte shuffle, XOR and subtraction deltas, each along the last axis or the row above, with shuffle) and then zstd.
+  - Chunked storage for NumPy-style arrays (`TPAR`, version 1). Each chunk is stored with the smallest of seven lossless filters (none, byte shuffle, XOR and subtraction deltas along the last axis or the row above, and the Lorenzo predictor, each with shuffle) and then zstd.
   - `.npy` input keeps its original header, so unpacking gives back the file byte for byte. Raw input needs `--dtype` and `--shape`.
+  - `.npz` input with exactly one array is accepted. Files with several arrays are refused, since an archive holds one array.
   - `read_slice` reads a rectangular slice and decodes only the chunks it overlaps.
   - CLI: `pack-arrays`, `unpack-arrays`, `slice-arrays`. `inspect` detects the format.
 - **Logs: SQL (`tpt-press-logs`, feature `strata`)**
@@ -43,9 +54,9 @@ archive formats may change between any two versions.
   - tpt-strata is not on crates.io, so this feature takes it from git, pinned to a commit. See the note under *Publishing* in `TODO.md`.
 - **Tests, examples and CI**
   - `tests/` is a workspace member (`tpt-press-tests`) with six cross-crate tests.
-  - Examples: `cli/examples/make_logs_corpus.rs` (seeded log corpus for the benchmarks) and `cli/examples/compare_formats.rs` (zip and zstd sizes).
+  - Examples: `tpt-press-cli/examples/make_logs_corpus.rs` (seeded log corpus for the benchmarks) and `tpt-press-cli/examples/compare_formats.rs` (zip and zstd sizes).
   - CI runs clippy and tests with the `strata` feature.
-  - Examples: `core/examples/round_trip.rs`, `logs/examples/query_time_range.rs`, `tensors/examples/shard_model.rs`, `logs/examples/gorilla_sizes.rs`.
+  - Examples: `tpt-press-core/examples/round_trip.rs`, `tpt-press-logs/examples/query_time_range.rs`, `tpt-press-tensors/examples/shard_model.rs`, `tpt-press-logs/examples/gorilla_sizes.rs`.
   - CI runs clippy and tests with the `async` feature, and has an MSRV job on Rust 1.96.0.
   - `.github/workflows/release.yml` runs on version tags, tests, and uploads CLI binaries. It does not publish.
 

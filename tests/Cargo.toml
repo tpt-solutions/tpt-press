@@ -16,9 +16,9 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
-tpt-press-core = { path = "../crates/core", version = "0.1.0" }
-tpt-press-assets = { path = "../crates/assets", version = "0.1.0" }
-tpt-press-tensors = { path = "../crates/tensors", version = "0.1.0", features = ["async"] }
-tpt-press-logs = { path = "../crates/logs", version = "0.1.0" }
+tpt-press-core = { path = "../crates/tpt-press-core", version = "0.1.0" }
+tpt-press-assets = { path = "../crates/tpt-press-assets", version = "0.1.0" }
+tpt-press-tensors = { path = "../crates/tpt-press-tensors", version = "0.1.0", features = ["async"] }
+tpt-press-logs = { path = "../crates/tpt-press-logs", version = "0.1.0" }
 tokio = { version = "1.53.2", default-features = false, features = ["macros", "rt"] }
 tempfile = "3.27.0"

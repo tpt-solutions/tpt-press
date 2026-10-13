@@ -7,7 +7,7 @@ in "How this was checked" when the code changes.
 
 tpt-press has one `unsafe` block of its own:
 
-- `crates/assets/src/reader.rs`, `Archive::open`: `memmap2::Mmap::map` on a
+- `crates/tpt-press-assets/src/reader.rs`, `Archive::open`: `memmap2::Mmap::map` on a
   read-only file handle.
 
 Every other crate forbids unsafe code: `core`, `logs` and `tensors` use

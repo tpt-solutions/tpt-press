@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core",
-    "crates/assets",
-    "crates/tensors",
-    "crates/logs",
-    "crates/genomics",
-    "crates/arrays",
-    "crates/cli",
+    "crates/tpt-press-core",
+    "crates/tpt-press-assets",
+    "crates/tpt-press-tensors",
+    "crates/tpt-press-logs",
+    "crates/tpt-press-genomics",
+    "crates/tpt-press-arrays",
+    "crates/tpt-press-cli",
     "tests",
 ]
 

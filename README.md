@@ -13,15 +13,17 @@ structure of the data they compress: game assets, ML model weights, and logs.
 
 | Crate | Purpose |
 |-------|---------|
-| `tpt-press-core` | Shared traits, parallel chunking, zstd wrapper, errors |
-| `tpt-press-assets` | Memory-mapped game asset archives (`.tpa`) |
-| `tpt-press-tensors` | ML model archiving with tensor-aware chunking |
-| `tpt-press-logs` | JSON/CSV/log archiving with dictionaries and time indexing. `query --sql` with the `strata` feature |
-| `tpt-press-genomics` | Lossless FASTA/FASTQ archiving with context-mixed bases and qualities, and random access by name |
-| `tpt-press-arrays` | Lossless chunked n-dimensional arrays, with `.npy` support and slice reads |
-| `tpt-press-cli` | The `tpt-press` command-line tool |
+| [`tpt-press-core`](crates/tpt-press-core/README.md) | Shared traits, parallel chunking, zstd wrapper, encryption, errors |
+| [`tpt-press-assets`](crates/tpt-press-assets/README.md) | Memory-mapped game asset archives (`.tpa`) |
+| [`tpt-press-tensors`](crates/tpt-press-tensors/README.md) | ML model archiving with tensor-aware chunking, sharding and async reads |
+| [`tpt-press-logs`](crates/tpt-press-logs/README.md) | JSON/CSV/log archiving with dictionaries and time indexing. `query --sql` with the `strata` feature |
+| [`tpt-press-genomics`](crates/tpt-press-genomics/README.md) | Lossless FASTA/FASTQ archiving with context-mixed bases and qualities, and random access by name |
+| [`tpt-press-arrays`](crates/tpt-press-arrays/README.md) | Lossless chunked n-dimensional arrays, with `.npy` support and slice reads |
+| [`tpt-press-cli`](crates/tpt-press-cli/README.md) | The `tpt-press` command-line tool |
 
-The libraries are the primary product. The CLI is a thin consumer of them.
+The libraries are the primary product. The CLI is a thin consumer of them. Each
+crate has its own README, CHANGELOG, and runnable examples in its `examples/`
+folder.
 
 ## Command-line use
 
