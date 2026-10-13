@@ -320,7 +320,7 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         chunk: Option<Vec<u64>>,
         /// Filter for every chunk. `auto` tries each and keeps the smallest.
-        #[arg(long, value_parser = ["auto", "none", "shuffle", "xor", "up", "delta", "delta-up"], default_value = "auto")]
+        #[arg(long, value_parser = ["auto", "none", "shuffle", "xor", "up", "delta", "delta-up", "lorenzo"], default_value = "auto")]
         filter: String,
         /// zstd compression level.
         #[arg(long, default_value_t = DEFAULT_LEVEL)]
@@ -1496,6 +1496,7 @@ fn pack_arrays(
             "up" => arrays::FilterChoice::Fixed(arrays::Filter::UpShuffle),
             "delta" => arrays::FilterChoice::Fixed(arrays::Filter::Delta),
             "delta-up" => arrays::FilterChoice::Fixed(arrays::Filter::DeltaUp),
+            "lorenzo" => arrays::FilterChoice::Fixed(arrays::Filter::Lorenzo),
             _ => arrays::FilterChoice::Auto,
         },
     };
@@ -1507,9 +1508,9 @@ fn pack_arrays(
             arrays::pack_raw(reader, writer, &dtype, &shape, &options)
         })?,
     };
-    let [none, shuffle, xor, up, delta, delta_up] = stats.filter_counts;
+    let [none, shuffle, xor, up, delta, delta_up, lorenzo] = stats.filter_counts;
     Ok(format!(
-        "packed {} {:?} in {} chunks of {:?}: {} -> {} bytes ({:.2}x); filters: none {none}, shuffle {shuffle}, xor+shuffle {xor}, xor-up+shuffle {up}, delta+shuffle {delta}, delta-up+shuffle {delta_up}",
+        "packed {} {:?} in {} chunks of {:?}: {} -> {} bytes ({:.2}x); filters: none {none}, shuffle {shuffle}, xor+shuffle {xor}, xor-up+shuffle {up}, delta+shuffle {delta}, delta-up+shuffle {delta_up}, lorenzo+shuffle {lorenzo}",
         stats.dtype,
         stats.shape,
         stats.chunks,

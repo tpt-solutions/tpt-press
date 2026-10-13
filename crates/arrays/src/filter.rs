@@ -163,7 +163,11 @@ fn lorenzo(data: &[u8], elem: usize, extent: &[u64], forward: bool) -> Vec<u8> {
             if !inside {
                 continue;
             }
-            let neighbour = if forward { source[i - offset] } else { values[i - offset] };
+            let neighbour = if forward {
+                source[i - offset]
+            } else {
+                values[i - offset]
+            };
             if mask.count_ones() % 2 == 1 {
                 prediction = prediction.wrapping_add(neighbour);
             } else {
@@ -339,7 +343,10 @@ mod tests {
         // Two rows of three identical values each: the second row becomes zero.
         let row = [7u8, 7, 7];
         let data: Vec<u8> = [row, row].concat();
-        assert_eq!(&Filter::UpShuffle.encode(&data, 1, &[2, 3])[3..], &[0, 0, 0]);
+        assert_eq!(
+            &Filter::UpShuffle.encode(&data, 1, &[2, 3])[3..],
+            &[0, 0, 0]
+        );
         assert_eq!(&Filter::DeltaUp.encode(&data, 1, &[2, 3])[3..], &[0, 0, 0]);
     }
 

@@ -167,7 +167,7 @@ fn a_fixed_filter_is_used_for_every_chunk() {
         &options,
     )
     .unwrap();
-    assert_eq!(stats.filter_counts, [0, 4, 0, 0, 0, 0]);
+    assert_eq!(stats.filter_counts, [0, 4, 0, 0, 0, 0, 0]);
     assert_eq!(unpack_bytes(&archive).unwrap(), data);
 }
 

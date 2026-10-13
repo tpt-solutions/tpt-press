@@ -164,7 +164,6 @@ fn decode_chunk<R: Read + Seek>(
     elem: usize,
 ) -> Result<Vec<u8>> {
     let expected = extent.iter().product::<u64>() as usize * elem;
-    let row = extent.last().copied().unwrap_or(1) as usize;
     input.seek(SeekFrom::Start(entry.offset)).map_err(map_io)?;
     let mut payload = vec![0u8; entry.len as usize];
     input.read_exact(&mut payload).map_err(map_io)?;
@@ -175,7 +174,7 @@ fn decode_chunk<R: Read + Seek>(
     if filtered.len() != expected {
         return Err(Error::Corrupt("chunk has the wrong size"));
     }
-    Ok(entry.filter.decode(&filtered, elem, row))
+    Ok(entry.filter.decode(&filtered, elem, extent))
 }
 
 fn sub(a: &[u64], b: &[u64]) -> Vec<u64> {

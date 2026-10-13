@@ -63,7 +63,7 @@ pub struct Stats {
     /// Bytes written to the archive.
     pub output_bytes: u64,
     /// Chunks stored with each filter, indexed by [`Filter::code`].
-    pub filter_counts: [u64; 6],
+    pub filter_counts: [u64; 7],
 }
 
 /// Packs a `.npy` file. Its exact header is kept, so unpacking reproduces the file.
@@ -197,7 +197,7 @@ fn pack_array<W: Write>(
         FilterChoice::Fixed(filter) => vec![filter],
     };
     let mut entries: Vec<Entry> = Vec::new();
-    let mut filter_counts = [0u64; 6];
+    let mut filter_counts = [0u64; 7];
 
     for linear in 0..geometry.chunk_count() {
         let (start, extent) = geometry.chunk_box(linear);
@@ -205,8 +205,7 @@ fn pack_array<W: Write>(
 
         let mut best: Option<(Filter, Vec<u8>)> = None;
         for filter in candidates.iter().copied() {
-            let row = extent.last().copied().unwrap_or(1) as usize;
-            let compressed = codec::compress(&filter.encode(&bytes, elem, row), options.level)?;
+            let compressed = codec::compress(&filter.encode(&bytes, elem, &extent), options.level)?;
             if best
                 .as_ref()
                 .is_none_or(|(_, b)| compressed.len() < b.len())
