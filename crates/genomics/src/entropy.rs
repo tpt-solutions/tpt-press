@@ -239,13 +239,6 @@ impl MixModel {
         }
     }
 
-    /// Learns a bit at `node` in another context of input `input`, without coding it.
-    /// Used to teach the models what the other strand of the sequence implies.
-    pub(crate) fn train(&mut self, input: usize, context: u64, node: usize, bit: u32) {
-        let slot = self.bucket(input, context) + node;
-        bump(&mut self.tables[input][slot], bit);
-    }
-
     /// The probability that the bit at `node` is 1, in units of 1/4096.
     pub(crate) fn predict(&mut self, node: usize) -> u32 {
         self.node = node;
