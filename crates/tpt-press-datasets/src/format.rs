@@ -191,6 +191,39 @@ pub fn parse_footer(bytes: &[u8]) -> Result<Footer> {
     })
 }
 
+/// Checks that the footer's index lies between the header and the footer, so
+/// that the file length is consistent with it. Also checks the index size limit.
+pub(crate) fn check_footer_location(footer: &Footer, file_len: u64) -> Result<()> {
+    if u64::from(footer.index_len) > MAX_INDEX_LEN {
+        return Err(Error::Corrupt("index is larger than the limit"));
+    }
+    if footer.index_offset < HEADER_LEN
+        || footer.index_offset + u64::from(footer.index_len) + FOOTER_LEN != file_len
+    {
+        return Err(Error::Corrupt("footer does not match the file size"));
+    }
+    Ok(())
+}
+
+/// Checks a member's stored bytes against its CRC32, then decodes them to the
+/// member's raw bytes. `key` names the sample in the error.
+pub(crate) fn decode_member(key: &str, m: &MemberEntry, stored: Vec<u8>) -> Result<Vec<u8>> {
+    if crc32fast::hash(&stored) != m.crc32 {
+        return Err(Error::ChecksumMismatch {
+            sample: key.to_owned(),
+            member: m.name.clone(),
+        });
+    }
+    let raw = match m.codec {
+        Codec::Stored => stored,
+        Codec::Zstd => codec::decompress(&stored, m.raw_len as usize)?,
+    };
+    if raw.len() != m.raw_len as usize {
+        return Err(Error::Corrupt("member length does not match its index"));
+    }
+    Ok(raw)
+}
+
 /// Checks the stored index against its footer, decompresses it, and decodes it.
 pub fn read_index(stored: &[u8], footer: &Footer) -> Result<Vec<SampleEntry>> {
     if crc32fast::hash(stored) != footer.index_crc32 {

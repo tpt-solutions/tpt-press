@@ -19,4 +19,6 @@ the archive format may change between any two versions.
 - `import_tar`: WebDataset tar import, streaming. Files with no dot in their name
   are skipped and counted.
 - `shuffled_order`: a deterministic permutation for a seed.
+- `AsyncDataset` behind the `async` feature (tokio), for sources read by range.
+  It reads the same archives as `Dataset`.
 - CLI: `import-dataset`, `import-hf` and `list-dataset` (with `--verify`).

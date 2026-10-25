@@ -2,10 +2,8 @@
 
 use std::io::{Read, Seek, SeekFrom};
 
-use tpt_press_core::codec;
-
 use crate::error::{map_read, Error, Result};
-use crate::format::{self, Codec, MemberEntry, SampleEntry, FOOTER_LEN, HEADER_LEN, MAX_INDEX_LEN};
+use crate::format::{self, Codec, MemberEntry, SampleEntry, FOOTER_LEN, HEADER_LEN};
 use crate::writer::{Member, Sample};
 
 /// An open dataset archive. Samples are read on request, so opening reads only
@@ -32,14 +30,7 @@ impl<R: Read + Seek> Dataset<R> {
         input.read_exact(&mut footer_bytes).map_err(map_read)?;
         let footer = format::parse_footer(&footer_bytes)?;
 
-        if u64::from(footer.index_len) > MAX_INDEX_LEN {
-            return Err(Error::Corrupt("index is larger than the limit"));
-        }
-        if footer.index_offset < HEADER_LEN
-            || footer.index_offset + u64::from(footer.index_len) + FOOTER_LEN != file_len
-        {
-            return Err(Error::Corrupt("footer does not match the file size"));
-        }
+        format::check_footer_location(&footer, file_len)?;
 
         input.seek(SeekFrom::Start(footer.index_offset))?;
         let mut stored = vec![0u8; footer.index_len as usize];
@@ -136,19 +127,6 @@ impl<R: Read + Seek> Dataset<R> {
         self.input.seek(SeekFrom::Start(m.offset))?;
         let mut stored = vec![0u8; m.stored_len as usize];
         self.input.read_exact(&mut stored).map_err(map_read)?;
-        if crc32fast::hash(&stored) != m.crc32 {
-            return Err(Error::ChecksumMismatch {
-                sample: key.to_owned(),
-                member: m.name.clone(),
-            });
-        }
-        let raw = match m.codec {
-            Codec::Stored => stored,
-            Codec::Zstd => codec::decompress(&stored, m.raw_len as usize)?,
-        };
-        if raw.len() != m.raw_len as usize {
-            return Err(Error::Corrupt("member length does not match its index"));
-        }
-        Ok(raw)
+        format::decode_member(key, m, stored)
     }
 }

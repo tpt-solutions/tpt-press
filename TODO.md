@@ -117,11 +117,11 @@ Non-goals: no image/audio/video recompression. ML datasets store image blobs opa
 - [~] Benchmarks vs plain zstd and Parquet. zstd and the shuffle are measured in `docs/benchmarks.md`. Parquet is not measured, since no Parquet tool is installed here
 
 ### 7b. ML datasets (`tpt-press-datasets`, builds on `.tpa` + tensors streaming)
-- [~] Depends on Phase 3 (`.tpa` index/mmap) and Phase 4 (async sharded streaming). Not used. The dataset format is its own `.tpds` layout, which reads any `Read + Seek` source. Async reads are not done
+- [~] Depends on Phase 3 (`.tpa` index/mmap) and Phase 4 (async sharded streaming). Not used. The dataset format is its own `.tpds` layout, which reads any `Read + Seek` source. Async reads are done with `AsyncDataset`, and the `.tpa` mmap path is not used
 - [x] Shard format: WebDataset-style samples grouped by key, random access by sample index (`crates/tpt-press-datasets/src/format.rs`)
 - [x] Store already-compressed media (JPEG/PNG/etc.) as-is; compress only text/metadata/tensors. Decided by member extension, so media is never tried with zstd
 - [x] Deterministic shuffling-friendly index (`shuffled_order`, SplitMix64 and Fisher-Yates); per-member CRC32 and an index checksum. Multi-file shard sets are not done: one archive per shard, and the caller splits the tar
-- [~] Network/streamed shard reading. `Dataset` works over any `Read + Seek`, so a range-reading source works. No async reader yet
+- [x] Network/streamed shard reading. `AsyncDataset` (feature `async`, tokio) reads any `AsyncRead + AsyncSeek` source by range: header, footer and index, then one seek and read per member. Tests run in CI with the async feature
 - [x] Import from WebDataset tar (streaming, `import-dataset`) and Hugging Face-style folders (`metadata.jsonl` plus files, `import-hf`). Paths that leave the folder are refused
 - [x] Benchmarks: sample throughput vs tar shards (`examples/random_access.rs`, `docs/benchmarks.md`). Archive is 97.2% of member bytes against 130.6% for tar. Random reads are noisy across runs, and the two sides do different work, so no speed claim is made
 

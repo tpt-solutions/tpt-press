@@ -27,7 +27,7 @@ let sample = dataset.sample(0)?;
 ```
 
 Status: pre-0.1. The format may change before 1.0. The layout is in
-`docs/formats.md`. Not done: multi-file shard sets
-import, and an async reader.
+`docs/formats.md`. Async reading is behind the `async` feature (`AsyncDataset`).
+Not done: multi-file shard sets.
 
 Licensed under MIT OR Apache-2.0.

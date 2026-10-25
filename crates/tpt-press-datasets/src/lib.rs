@@ -13,6 +13,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "async")]
+mod async_reader;
 mod error;
 mod format;
 mod hf;
@@ -21,6 +23,8 @@ mod reader;
 mod shuffle;
 mod writer;
 
+#[cfg(feature = "async")]
+pub use async_reader::AsyncDataset;
 pub use error::{Error, Result};
 pub use format::Codec;
 pub use hf::{import_hf, METADATA_FILE};
