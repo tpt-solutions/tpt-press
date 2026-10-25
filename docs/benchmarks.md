@@ -359,3 +359,17 @@ one. Real fine-tunes are not measured yet.
 
 A regular change, the same bit on every eighth value, collapses to a few hundred
 bytes. That is an artifact of the pattern, so it is not reported as a result.
+
+## fp16 field split: tried and not kept (synthetic, single run)
+
+Tried a field split for fp16: the sign and exponent in one plane, and the
+mantissa in its low and high bytes, each compressed with zstd. Measured on 1 Mi
+synthetic fp16 values (skewed exponents near 1.0, random sign and mantissa):
+
+- shuffle plus zstd: 1,803,501 bytes
+- field split: 1,906,064 bytes (5.7% larger)
+
+The split lost, so the writer would never have chosen it. It was removed, not
+kept as a dead format code. The random mantissa dominates the size, and the
+shuffle already keeps the exponent bits together. Real fp16 weights are not
+measured, so this is a result for this synthetic data only.
