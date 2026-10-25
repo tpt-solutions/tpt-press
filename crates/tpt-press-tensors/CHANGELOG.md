@@ -19,6 +19,12 @@ the archive format may change between any two versions.
 - Byte-shuffle piece codec for bf16, f16, f32 and f64. It is chosen per piece
   when it is smaller. On a real bf16 checkpoint (SmolLM2-135M) it saves 28 to
   30%, against 22% for plain zstd.
+- Exponent/mantissa split piece codec for `BF16` tensors. The exponent goes in
+  its own zstd plane, one byte per value, and the sign and mantissa in another.
+  On synthetic Gaussian bf16 it archives to 70.2%, against 71.0% for the byte
+  shuffle alone. The gain on real checkpoints is not measured yet. The design is
+  in `src/split.rs`. The literature points to a larger gain (see
+  `docs/literature.md`).
 - Pieces of at most 16 MiB, split at element boundaries, each with a CRC32.
 - `Archive` with `metadata`, `tensors`, `tensor`, `read_tensor`,
   `read_tensor_into` (streamed, one piece at a time) and `verify`.

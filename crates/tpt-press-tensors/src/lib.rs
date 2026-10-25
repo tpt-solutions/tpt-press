@@ -25,6 +25,7 @@ mod reader;
 pub mod safetensors;
 pub mod sharded;
 mod shuffle;
+mod split;
 mod unpack;
 mod writer;
 

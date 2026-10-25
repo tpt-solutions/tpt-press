@@ -14,8 +14,9 @@
 //!
 //! A tensor is split into pieces only at its own element boundaries, so no
 //! piece holds bytes from two tensors. Pieces of one tensor are contiguous in
-//! the piece table, in order. A piece is a zstd frame when `compression` is 1 (and a shuffled zstd frame when it is 2),
-//! and raw bytes when it is 0.
+//! the piece table, in order. A piece is a zstd frame when `compression` is 1,
+//! a shuffled zstd frame when it is 2, a split bf16 payload when it is 3 (see
+//! [`Compression::Split`]), and raw bytes when it is 0.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -59,6 +60,11 @@ pub enum Compression {
     /// floats the exponent bytes then sit together, and compress much better.
     /// Used only for element widths of 2, 4 and 8 bytes.
     Shuffled,
+    /// A bf16 piece split into an exponent plane and a sign-and-mantissa plane.
+    /// The payload is `exponent_frame_len u32`, then a zstd frame of the
+    /// exponent bytes, then a zstd frame of the other bytes. Used only for
+    /// `BF16` tensors. See `split.rs`.
+    Split,
 }
 
 impl Compression {
@@ -67,6 +73,7 @@ impl Compression {
             Compression::Stored => 0,
             Compression::Zstd => 1,
             Compression::Shuffled => 2,
+            Compression::Split => 3,
         }
     }
 
@@ -75,6 +82,7 @@ impl Compression {
             0 => Some(Compression::Stored),
             1 => Some(Compression::Zstd),
             2 => Some(Compression::Shuffled),
+            3 => Some(Compression::Split),
             _ => None,
         }
     }

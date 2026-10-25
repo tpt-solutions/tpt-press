@@ -8,7 +8,7 @@ use tpt_press_core::codec;
 use crate::dtype;
 use crate::error::{map_io, Error, Result};
 use crate::format::{self, Compression, Index, Piece, TensorEntry, HEADER_LEN, MAX_PIECE_BYTES};
-use crate::shuffle;
+use crate::{shuffle, split};
 
 /// An open tensor archive. Opening reads only the header, footer and index.
 pub struct Archive<R> {
@@ -149,6 +149,7 @@ pub(crate) fn decode_piece(
             }
             Ok(shuffle::unshuffle(&raw, width as usize))
         }
+        Compression::Split => split::decode_payload(&stored, piece.raw_len as usize),
         Compression::Stored => {
             if stored.len() != piece.raw_len as usize {
                 return Err(Error::Corrupt(

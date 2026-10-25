@@ -63,6 +63,22 @@ fn bf16_weights_compress_past_plain_zstd_and_round_trip() {
 }
 
 #[test]
+fn bf16_exponent_split_beats_the_shuffle_and_round_trips() {
+    let weights = bf16_weights(1 << 20);
+    let archive = pack_bytes(&safetensors("BF16", 2, &weights));
+    eprintln!(
+        "bf16 split: {} bytes for {} bytes of weights ({:.1}%)",
+        archive.len(),
+        weights.len(),
+        archive.len() as f64 * 100.0 / weights.len() as f64
+    );
+
+    let mut reader = Archive::open(Cursor::new(archive.clone())).unwrap();
+    reader.verify().unwrap();
+    assert_eq!(reader.read_tensor("w").unwrap(), weights);
+}
+
+#[test]
 fn f32_tensors_round_trip_through_the_shuffle() {
     let values: Vec<u8> = (0..50_000u32)
         .flat_map(|i| (i as f32 * 0.001).sin().to_le_bytes())

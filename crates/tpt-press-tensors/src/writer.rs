@@ -91,7 +91,8 @@ where
             let mut raw = vec![0u8; len as usize];
             input.read_exact(&mut raw).map_err(map_io)?;
 
-            let (payload, compression) = choose_payload(raw, unit, opts.level)?;
+            let is_bf16 = tensor.dtype == "BF16";
+            let (payload, compression) = choose_payload(raw, unit, is_bf16, opts.level)?;
 
             output.write_all(&payload)?;
             index.pieces.push(Piece {
@@ -161,16 +162,26 @@ pub(crate) fn read_model<R: Read + Seek>(input: &mut R) -> Result<Model> {
     }
 }
 
-/// Picks the smallest encoding of a piece: raw, zstd, or, for element widths the
-/// shuffle supports, shuffled zstd. Raw wins ties, so incompressible data is
-/// stored as it is.
-fn choose_payload(raw: Vec<u8>, width: u64, level: i32) -> Result<(Vec<u8>, Compression)> {
+/// Picks the smallest encoding of a piece: raw, zstd, shuffled zstd for element
+/// widths the shuffle supports, or the exponent split for bf16 pieces. Raw wins
+/// ties, so incompressible data is stored as it is.
+fn choose_payload(
+    raw: Vec<u8>,
+    width: u64,
+    is_bf16: bool,
+    level: i32,
+) -> Result<(Vec<u8>, Compression)> {
     let zstd = codec::compress(&raw, level)?;
     let shuffled = if crate::shuffle::supports(width) {
         Some(codec::compress(
             &crate::shuffle::shuffle(&raw, width as usize),
             level,
         )?)
+    } else {
+        None
+    };
+    let split = if is_bf16 {
+        Some(crate::split::encode_payload(&raw, level)?)
     } else {
         None
     };
@@ -182,6 +193,11 @@ fn choose_payload(raw: Vec<u8>, width: u64, level: i32) -> Result<(Vec<u8>, Comp
     if let Some(shuffled) = shuffled {
         if shuffled.len() < best.0.len() {
             best = (shuffled, Compression::Shuffled);
+        }
+    }
+    if let Some(split) = split {
+        if split.len() < best.0.len() {
+            best = (split, Compression::Split);
         }
     }
     Ok(best)
