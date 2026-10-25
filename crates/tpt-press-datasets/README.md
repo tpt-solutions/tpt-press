@@ -11,6 +11,7 @@ archive reads only its index, so one sample can be read without reading the rest
   as they are. Other members are compressed with zstd when that is smaller.
 - Each member has a CRC32, and the index has its own. `Dataset::verify` checks all
   of them.
+- `import_hf` converts a Hugging Face-style folder (`metadata.jsonl` plus files).
 - `import_tar` converts a WebDataset tar (`<key>.<member>` file names) into an
   archive, streaming one sample at a time.
 - `shuffled_order(len, seed)` gives a repeatable random order for an epoch.
@@ -26,7 +27,7 @@ let sample = dataset.sample(0)?;
 ```
 
 Status: pre-0.1. The format may change before 1.0. The layout is in
-`docs/formats.md`. Not done: multi-file shard sets, Hugging Face JSONL-plus-files
+`docs/formats.md`. Not done: multi-file shard sets
 import, and an async reader.
 
 Licensed under MIT OR Apache-2.0.

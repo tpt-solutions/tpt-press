@@ -244,6 +244,16 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_LEVEL, value_parser = clap::value_parser!(i32).range(i64::from(MIN_LEVEL)..=i64::from(MAX_LEVEL)))]
         level: i32,
     },
+    /// Convert a Hugging Face-style folder (metadata.jsonl plus files) into a dataset archive.
+    ImportHf {
+        /// Folder holding metadata.jsonl and the files it names.
+        input: PathBuf,
+        /// Dataset archive to write. Removed if importing fails.
+        output: PathBuf,
+        /// zstd compression level for members that are not compressed media.
+        #[arg(long, default_value_t = DEFAULT_LEVEL, value_parser = clap::value_parser!(i32).range(i64::from(MIN_LEVEL)..=i64::from(MAX_LEVEL)))]
+        level: i32,
+    },
     /// List the first samples of a dataset archive.
     ListDataset {
         /// Dataset archive to read.
@@ -537,6 +547,11 @@ fn main() -> ExitCode {
             output,
             level,
         } => import_dataset(&input, &output, level),
+        Command::ImportHf {
+            input,
+            output,
+            level,
+        } => import_hf(&input, &output, level),
         Command::ListDataset { archive, verify } => list_dataset(&archive, verify),
     };
 
@@ -1096,6 +1111,16 @@ fn import_dataset(input: &Path, output: &Path, level: i32) -> Result<String, Box
     Ok(format!(
         "imported {} samples ({} members), skipped {} non-member entries: {} -> {} bytes",
         stats.samples, stats.members, stats.skipped, stats.input_bytes, stats.archive_bytes
+    ))
+}
+
+/// Converts a Hugging Face-style folder into a dataset archive.
+fn import_hf(input: &Path, output: &Path, level: i32) -> Result<String, Box<dyn Error>> {
+    let writer = BufWriter::new(create(output)?);
+    let stats = finish_or_remove(output, || datasets::import_hf(input, writer, level))?;
+    Ok(format!(
+        "imported {} samples ({} members): {} -> {} bytes",
+        stats.samples, stats.members, stats.input_bytes, stats.archive_bytes
     ))
 }
 

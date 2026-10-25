@@ -244,3 +244,46 @@ fn random_bytes_never_panic() {
         }
     }
 }
+
+#[test]
+fn imports_a_hugging_face_folder() {
+    let dir = std::env::temp_dir().join(format!("tpt-hf-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("img")).unwrap();
+    std::fs::write(dir.join("img/0001.png"), b"PNGDATA").unwrap();
+    std::fs::write(dir.join("img/0002.png"), b"PNGMORE").unwrap();
+    std::fs::write(
+        dir.join(tpt_press_datasets::METADATA_FILE),
+        "{\"file_name\":\"img/0001.png\",\"label\":\"cat\"}\n\n{\"file_name\":\"img/0002.png\",\"label\":\"dog\"}\n",
+    )
+    .unwrap();
+
+    let mut out = Vec::new();
+    let stats = tpt_press_datasets::import_hf(&dir, &mut out, 3).unwrap();
+    assert_eq!(stats.samples, 2);
+    assert_eq!(stats.members, 4);
+
+    let mut dataset = Dataset::open(Cursor::new(out)).unwrap();
+    assert_eq!(dataset.key(0).unwrap(), "img/0001");
+    assert_eq!(dataset.member(0, "png").unwrap(), b"PNGDATA");
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&dataset.member(1, "metadata").unwrap()).unwrap();
+    assert_eq!(metadata["label"], "dog");
+    assert!(metadata.get("file_name").is_none());
+    dataset.verify().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn hugging_face_rows_that_leave_the_folder_are_refused() {
+    let dir = std::env::temp_dir().join(format!("tpt-hf-escape-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(tpt_press_datasets::METADATA_FILE),
+        "{\"file_name\":\"../outside.png\"}\n",
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    let result = tpt_press_datasets::import_hf(&dir, &mut out, 3);
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

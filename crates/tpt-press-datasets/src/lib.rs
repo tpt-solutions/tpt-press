@@ -15,6 +15,7 @@
 
 mod error;
 mod format;
+mod hf;
 mod import;
 mod reader;
 mod shuffle;
@@ -22,6 +23,7 @@ mod writer;
 
 pub use error::{Error, Result};
 pub use format::Codec;
+pub use hf::{import_hf, METADATA_FILE};
 pub use import::import_tar;
 pub use reader::Dataset;
 pub use shuffle::shuffled_order;

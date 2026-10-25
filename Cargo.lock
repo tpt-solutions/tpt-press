@@ -2144,6 +2144,7 @@ name = "tpt-press-datasets"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "serde_json",
  "tar",
  "thiserror 2.0.21",
  "tpt-press-core",

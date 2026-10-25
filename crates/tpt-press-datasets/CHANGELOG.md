@@ -15,7 +15,8 @@ the archive format may change between any two versions.
 - `Dataset`: `open`, `len`, `key`, `member_names`, `member_codec`, `sample`,
   `member` (reads one member without the others) and `verify`.
 - `Writer` and `pack_samples`, with validation of keys and member names.
+- `import_hf`: Hugging Face-style folder import (`metadata.jsonl` plus the files it names). Paths that leave the folder are refused.
 - `import_tar`: WebDataset tar import, streaming. Files with no dot in their name
   are skipped and counted.
 - `shuffled_order`: a deterministic permutation for a seed.
-- CLI: `import-dataset` and `list-dataset` (with `--verify`).
+- CLI: `import-dataset`, `import-hf` and `list-dataset` (with `--verify`).

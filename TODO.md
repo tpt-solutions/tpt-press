@@ -122,7 +122,7 @@ Non-goals: no image/audio/video recompression. ML datasets store image blobs opa
 - [x] Store already-compressed media (JPEG/PNG/etc.) as-is; compress only text/metadata/tensors. Decided by member extension, so media is never tried with zstd
 - [x] Deterministic shuffling-friendly index (`shuffled_order`, SplitMix64 and Fisher-Yates); per-member CRC32 and an index checksum. Multi-file shard sets are not done: one archive per shard, and the caller splits the tar
 - [~] Network/streamed shard reading. `Dataset` works over any `Read + Seek`, so a range-reading source works. No async reader yet
-- [~] Import from WebDataset tar (done, streaming, `import-dataset`). Hugging Face-style JSONL+files: not done
+- [x] Import from WebDataset tar (streaming, `import-dataset`) and Hugging Face-style folders (`metadata.jsonl` plus files, `import-hf`). Paths that leave the folder are refused
 - [x] Benchmarks: sample throughput vs tar shards (`examples/random_access.rs`, `docs/benchmarks.md`). Archive is 97.2% of member bytes against 130.6% for tar. Random reads are noisy across runs, and the two sides do different work, so no speed claim is made
 
 ### 7c. Genomics (`tpt-press-genomics`; needs domain review)
