@@ -8,9 +8,10 @@ checked on read, and a reader refuses versions it does not know.
 | Type    | Magic  | Footer magic | Version | Written by                          |
 | ------- | ------ | ------------ | ------- | ----------------------------------- |
 | Generic | `TPPR` | none (end frame) | 1  | `pack`                              |
-| Logs    | `TPLG` | `TPLX`       | 2       | `pack-logs`                         |
+| Logs    | `TPLG` | `TPLX`       | 3       | `pack-logs`                         |
 | Tensors | `TPTN` | `TPTX`       | 1       | `pack-tensors`                      |
 | Assets  | `TPAS` | `TPAX`       | 1       | `pack-assets`                       |
+| Datasets | `TPDS` | `TPDX`      | 1       | `import-dataset`                    |
 
 The layouts below are the same as the module docs in each crate's `format.rs`,
 which are the reference if the two ever disagree.
@@ -62,7 +63,7 @@ Chunk boundaries are not part of the format. `pack --content-defined` ends
 chunks where a gear rolling hash matches, rather than at fixed offsets. A reader
 sees only frames, so both kinds of archive are read the same way.
 
-## Logs archive (`TPLG`, version 2)
+## Logs archive (`TPLG`, version 3)
 
 ```text
 header: magic "TPLG" | version u16 | format u8 | reserved u8
@@ -74,7 +75,7 @@ index:  count u32 | entry * count
 footer: index_offset u64 | index_len u32 | index_crc32 u32 | magic "TPLX"
 ```
 
-`format` is 1 for JSON Lines and 2 for CSV. The dictionary is a zstd
+`format` is 1 for JSON Lines, 2 for CSV and 3 for Prometheus text samples (see below). The dictionary is a zstd
 dictionary trained on the first 10% of the input's cells (at most 64 KiB). It
 is used for every block, so it is written once.
 
@@ -85,7 +86,7 @@ default, and are compressed in parallel.
 
 ```text
 payload:      records u32 | column_count u16 | column_entry * column_count | streams
-column_entry: name_len u16 | name | offset u32 | compressed_len u32 | raw_len u32
+column_entry: name_len u16 | name | encoding u8 | offset u32 | compressed_len u32 | raw_len u32
 ```
 
 `offset` counts from the start of the payload. Each column is its own zstd
@@ -93,6 +94,23 @@ frame, so a query decompresses only the columns it reads. A query that has a
 time range also reads the timestamp column. In a raw column stream, each cell is
 followed by `\n`. In JSON, an empty cell means the key is absent, since a real
 value is never empty. In CSV, an empty cell is an empty field.
+
+`encoding` is 0 for text cells, as above, and 1 for `Timestamps`. A timestamp
+column uses 1 when every record's time cell is the canonical text for its time,
+and that encoding compresses smaller in the block. The stream is then the
+Gorilla delta-of-delta bit form of the record times (`gorilla.rs`), with no
+newlines. The reader rebuilds the text cells exactly. Other timestamp cells keep
+encoding 0, so the output is the same as the input text.
+
+### Prometheus input
+
+With `format` 3, each line is a Prometheus text sample,
+`name{label="value",...} value [timestamp_ms]`. Lines that start with `#`, and
+blank lines, are skipped. Each sample is stored as a JSON object: the name under
+`metric`, each label under its own name, the value under `value` (a number, or
+the strings `NaN`, `+Inf` and `-Inf`), and the time under the timestamp field as
+RFC 3339. A sample without a timestamp has no time. Output is JSON, as for JSON
+Lines.
 
 ### Index entries
 
@@ -126,6 +144,11 @@ tensor are contiguous in the piece table, in order. `compression` is:
   by position within each element: all first bytes, then all second bytes, and
   so on. Only element widths of 2, 4 and 8 bytes use it (bf16, f16, f32, f64).
   Unshuffling after decompression restores the original bytes exactly.
+- `3`: bf16 only. The bytes are split into an exponent plane (one byte per
+  value) and a sign-and-mantissa plane (one byte per value), each its own zstd
+  frame. Payload: `exponent_frame_len u32`, the exponent frame, then the other
+  frame. Unsplitting restores the bytes exactly. The writer uses it only for
+  `BF16` tensors. Code `3` is new in this version, like code `2` was.
 
 The writer tries every encoding that applies to a piece and keeps the smallest.
 Raw wins ties, so incompressible data is stored as it is. Code `2` is new in
@@ -280,8 +303,14 @@ footer : index offset u64 | index length u64 | index crc32 u32 | "TPRX"
 ```
 
 `.npz` files holding exactly one array are read from their `.npy` member, and the
-archive holds that array. Unpacking gives a `.npy` file, not the zip container. A
-`.npz` with several arrays is refused.
+archive holds that array. Unpacking gives a `.npy` file, not the zip container.
+
+A `.npz` with several arrays is stored as a bundle (`TPBN`, see `bundle.rs`): an
+index of named members, each member a complete `TPAR` archive. `read_member`
+copies one out. `inspect` lists a bundle's members, and `unpack-arrays --member
+NAME` writes one. A Zarr v2 directory store (a folder with `.zarray`) is packed
+by `pack-arrays`, which supports C order, no filters, and the `null` and `zstd`
+compressors. Blosc is refused by name.
 
 `descr` is a NumPy type string such as `<f4`. Only little-endian f2, f4, f8,
 i1 to i8, u1 to u8, and single-byte b1 are accepted. Fortran order is refused.
@@ -317,3 +346,23 @@ A slice read works out which chunks overlap the requested box, decodes only
 those, and copies each overlapping run. The index is checked when the archive is
 opened: entries must be contiguous and must reach the index. Each chunk is
 checked by CRC before it is decompressed.
+
+## Dataset archive (`TPDS`, version 1)
+
+```text
+header: magic "TPDS" | version u16 | flags u16 (reserved, must be 0)
+members: each member's stored bytes, back to back
+index:   one zstd frame of the index body:
+           sample_count u32, then per sample:
+             key u16 len + bytes | member_count u16
+             then per member: name u16 len + bytes | offset u64 | stored_len u32
+                              | raw_len u32 | crc32 u32 | codec u8
+footer:  index_offset u64 | index_len u32 (stored) | index_raw_len u32
+         | index_crc32 u32 (of the stored index) | magic "TPDX"
+```
+
+`codec` is 0 for stored bytes and 1 for one zstd frame. The writer stores a member
+as it is when its name is a known compressed-media extension (jpg, png, mp4,
+and so on), and otherwise uses zstd only when that is smaller. A stored member
+has `stored_len == raw_len`. Member sizes are capped at 1 GiB, and the index at
+256 MiB.

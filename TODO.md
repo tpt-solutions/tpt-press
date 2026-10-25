@@ -58,7 +58,7 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - [x] Tests proving query decompresses only relevant blocks (`time_range_skips_blocks_it_does_not_need`, and on a 1M-record log a one-hour window read 115 of 317 blocks)
 - [x] Logs archives support encryption: `pack-logs --encrypt`, `--passphrase-file`, `--recipient`, `--recipient-file`. `query` and `inspect` take `--passphrase-file` or `--identity`. Decision taken: an encrypted archive is decrypted into memory for a query, and nothing is written to disk. Memory use is about the archive size, so very large logs need that much RAM
 - [x] `inspect` works on logs archives: format, record and block counts, columns, time range, dictionary size, and ratio. It reads block directories, not records. Its ratio compares column data to the archive, so it differs from the ratio `pack-logs` prints, which compares the original file. `--chunks` is refused for logs
-- [ ] `unpack` does not apply to logs archives. Use `query` to read them back
+- [x] `unpack` does not apply to logs archives. Use `query` to read them back. Decided: by design, since a logs archive is a set of columns, not files
 - [x] Output is rebuilt from columns. Requested columns keep their order. Whole JSON records have keys sorted, and whitespace is normalized, so the text can differ from the input. The values are the same. Storing the raw line would restore byte-exact output but roughly doubles storage. CSV rows are re-quoted, so quoting can differ too
 - [x] Measured on the 1M-record sample: archive 1.97 MB → 0.85 MB (42x → 97x) after the columnar change
 
@@ -100,30 +100,30 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - [~] README with benchmarks vs tar.gz, zip, plain zstd. Done: zip (deflate 6 and 9) and plain zstd (levels 3 and 19) are measured in `docs/benchmarks.md` on a seeded 57 MB log corpus, with `tpt-press-cli/examples/compare_formats.rs`. The README links there. Still open: multi-run variance. Every row is one run, so differences under about 10% are noise
 - [x] GitHub Actions (`.github/workflows/ci.yml`): fmt, clippy and tests on Windows, Linux and macOS, plus cargo-deny. Written but not yet run on GitHub. Now also runs clippy and tests with the `async` feature, and has an MSRV job (Rust 1.96.0, `cargo check`)
 - [~] Release automation / CHANGELOG. `CHANGELOG.md` is written by hand. `.github/workflows/release.yml` runs on version tags: it tests, builds the CLI on three OSes, and uploads the binaries. It does not publish. Not run on GitHub yet
-- [ ] Publish crates in order: core -> logs/assets/tensors/genomics/arrays -> cli. **Blocked for logs and cli:** crates.io rejects git dependencies, even optional ones, and `tpt-press-logs` and `tpt-press-cli` both depend on tpt-strata from git. Either publish `tpt-strata` to crates.io first (it has no external dependencies), or drop the `strata` feature before publishing. genomics and arrays have no git dependencies
-- [ ] Tag v0.1.0
+- [ ] Publish crates in order: core -> logs/assets/tensors/genomics/arrays -> cli. **Blocked for logs and cli:** crates.io rejects git dependencies, even optional ones, and `tpt-press-logs` and `tpt-press-cli` both depend on tpt-strata from git. Either publish `tpt-strata` to crates.io first (it has no external dependencies), or drop the `strata` feature before publishing. genomics and arrays have no git dependencies. Recommendation on record: keep the `strata` feature and publish `tpt-strata` first. Not done here: publishing was excluded for this round
+- [ ] Tag v0.1.0. Not done here, same reason
 
 ## 7. Future domains (post-v0.1)
 Non-goals: no image/audio/video recompression. ML datasets store image blobs opaquely.
 
 ### 7a. Time-series & metrics (extend `tpt-press-logs` or sibling `tpt-press-timeseries`)
-- [ ] Decide: new input format in logs vs separate crate
-- [ ] Parsers: Prometheus text/remote-write dumps, OpenTelemetry JSON, CSV with timestamp column
-- [x] Delta-of-delta timestamp encoding. `tpt-press-logs/src/gorilla.rs` (Gorilla bit scheme, with tests). Beats zstd on jittered and exact timestamps. Not yet wired into the logs format
-- [~] XOR (Gorilla-style) float encoding. Implemented in `tpt-press-logs/src/gorilla.rs`, round-trips NaN, infinities and signed zeros. Measured: worse than plain zstd on quantised readings (27.7 against about 5.3 bits per value), and worse than shuffle-plus-zstd on full-precision floats. Decision needed: a per-column choice between plain zstd and shuffle-plus-zstd, not XOR, for floats. Not wired in
+- [x] Decide: new input format in logs vs separate crate. Decided: in logs. It already has the time index, columnar blocks and query path, and a new format needs only a parser and a cell mapping
+- [~] Parsers: Prometheus text done (`src/prometheus.rs`, `--format prometheus`, `.prom` files). Each sample becomes a JSON object, and `#` comment lines are skipped. Not done: remote-write (protobuf/snappy), and OpenTelemetry JSON (nested OTLP). CSV with a timestamp column already works
+- [x] Delta-of-delta timestamp encoding. `tpt-press-logs/src/gorilla.rs` (Gorilla bit scheme, with tests). Beats zstd on jittered and exact timestamps. Wired into the logs format (version 3): a timestamp column uses it when every cell is canonical and it compresses smaller. 19% smaller on a 200k-record sample, round trip exact
+- [~] XOR (Gorilla-style) float encoding. Implemented in `tpt-press-logs/src/gorilla.rs`, round-trips NaN, infinities and signed zeros. Measured: worse than plain zstd on quantised readings (27.7 against about 5.3 bits per value), and worse than shuffle-plus-zstd on full-precision floats. Decided: floats are not wired into logs. Logs store cells as text, so the float codec does not apply there, and per-column float choice is already done in arrays (see 7f). Closed as no-op
 - [ ] Per-column dictionaries for labels/tags
-- [ ] Reuse block/column directory and time-range index from `logs` (block.rs, inspect.rs)
+- [x] Reuse block/column directory and time-range index from `logs` (block.rs, inspect.rs). The Prometheus parser feeds the same blocks and index
 - [ ] Query by time range and series/label; `inspect` support
 - [~] Benchmarks vs plain zstd and Parquet. zstd and the shuffle are measured in `docs/benchmarks.md`. Parquet is not measured, since no Parquet tool is installed here
 
 ### 7b. ML datasets (`tpt-press-datasets`, builds on `.tpa` + tensors streaming)
-- [ ] Depends on Phase 3 (`.tpa` index/mmap) and Phase 4 (async sharded streaming)
-- [ ] Shard format: WebDataset-style samples grouped by key, random access by sample index
-- [ ] Store already-compressed media (JPEG/PNG/etc.) as-is; compress only text/metadata/tensors
-- [ ] Deterministic shuffling-friendly index; shard-level checksums
-- [ ] Network/streamed shard reading
-- [ ] Import from WebDataset tar, Hugging Face-style JSONL+files
-- [ ] Benchmarks: sample throughput vs tar shards
+- [~] Depends on Phase 3 (`.tpa` index/mmap) and Phase 4 (async sharded streaming). Not used. The dataset format is its own `.tpds` layout, which reads any `Read + Seek` source. Async reads are not done
+- [x] Shard format: WebDataset-style samples grouped by key, random access by sample index (`crates/tpt-press-datasets/src/format.rs`)
+- [x] Store already-compressed media (JPEG/PNG/etc.) as-is; compress only text/metadata/tensors. Decided by member extension, so media is never tried with zstd
+- [x] Deterministic shuffling-friendly index (`shuffled_order`, SplitMix64 and Fisher-Yates); per-member CRC32 and an index checksum. Multi-file shard sets are not done: one archive per shard, and the caller splits the tar
+- [~] Network/streamed shard reading. `Dataset` works over any `Read + Seek`, so a range-reading source works. No async reader yet
+- [~] Import from WebDataset tar (done, streaming, `import-dataset`). Hugging Face-style JSONL+files: not done
+- [x] Benchmarks: sample throughput vs tar shards (`examples/random_access.rs`, `docs/benchmarks.md`). Archive is 97.2% of member bytes against 130.6% for tar. Random reads are noisy across runs, and the two sides do different work, so no speed claim is made
 
 ### 7c. Genomics (`tpt-press-genomics`; needs domain review)
 - [x] FASTA/FASTQ parsers (split into ID, sequence, quality columns). `crates/tpt-press-genomics`, format `TPGN` v1, documented in `docs/formats.md`. Strict: refuses input it cannot return byte for byte, and names the line
@@ -142,8 +142,8 @@ Non-goals: no image/audio/video recompression. ML datasets store image blobs opa
 
 ### 7e. Lossless model-weight compression (extend `tpt-press-tensors`)
 Lossless only: output is byte-identical after unpack. Lossy quantization is a non-goal.
-- [ ] Literature check first: ZipNN, DFloat11 and newer work, so we build on published results
-- [~] Float-aware codec for bf16/fp16/fp8. Done: a byte-plane shuffle with zstd (piece code 2) for 2, 4 and 8-byte elements, chosen per piece when it is smaller. It saves 28% on SmolLM2-135M (plain zstd: 22%), and round-trips exactly. Not done: the exponent/mantissa split with ANS or Huffman, and fp8. Original plan: split exponent and mantissa streams, entropy-code them (ANS or Huffman). Target about 25-35% savings. Hook in at tensor-boundary chunking (`crates/tpt-press-tensors/src/writer.rs`) with a per-piece codec flag in the frame format (`crates/tpt-press-tensors/src/format.rs`). Keep the raw fallback when it does not shrink
+- [x] Literature check first: ZipNN, DFloat11 and newer work, so we build on published results. Findings in `docs/literature.md`: the exponent carries the savings, published gains are about 30 to 33% on BF16, and the 25 to 35% target is reasonable
+- [~] Float-aware codec for bf16/fp16/fp8. Done: a byte-plane shuffle with zstd (piece code 2) for 2, 4 and 8-byte elements, chosen per piece when it is smaller. It saves 28% on SmolLM2-135M (plain zstd: 22%), and round-trips exactly. Done: the exponent/mantissa split for `BF16` (piece code 3, `src/split.rs`). Each plane is entropy-coded with zstd, which uses Huffman for literals, not a separate ANS or Huffman coder. Synthetic bf16: 70.2% against 71.0% for the shuffle. Not measured on real checkpoints yet. Not done: fp16 (its 5-bit exponent does not fit the same byte split), and fp8. Keep the raw fallback when it does not shrink
 - [~] Benchmarks on real bf16 checkpoints (Llama-class) vs plain zstd; put numbers in the README. Done for SmolLM2-135M, a Llama-style model, in `docs/benchmarks.md`. Synthetic Gaussian bf16 is also measured in `docs/benchmarks.md` (generic compressors save about 21%, `pack-tensors` 22 to 23%), but no real checkpoint is available here. Also closes the Phase 4 note "compressible weights not measured yet"
 - [ ] Training checkpoints: fp32 master weights, Adam moments (`m`, `v`), step counter, scheduler and RNG state. Delta against the previous checkpoint plus the float codec. Lossless only, since a resumed run must be exact. Needs PyTorch/DeepSpeed/safetensors checkpoint layouts (depends on the open PyTorch pickle reader in Phase 4). Benchmark on a real small-model run
 - [ ] Delta compression against a base model: fine-tunes, merges and training checkpoints stored as differences from a parent, plus dedup of identical tensors across archives. Needs a way to reference the base archive and a clear error when it is missing
@@ -152,7 +152,7 @@ Lossless only: output is byte-identical after unpack. Lossy quantization is a no
 
 ### 7f. Scientific arrays (`tpt-press-arrays`; needs domain review)
 - [x] Decide scope: lossless first (float byte-shuffle or XOR-delta, then zstd). Done: only lossless storage is implemented. Lossy is not implemented, and is not planned as a default
-- [~] Input formats: raw n-dim arrays, NumPy `.npy`, and single-array `.npz` are done (`crates/tpt-press-arrays`, format `TPAR` v1). A `.npz` with several arrays is refused, because an archive holds one array. Not done: multi-array archives (needs a design decision), Zarr, HDF5/NetCDF. Fortran order and big-endian data are refused
+- [~] Input formats: raw n-dim arrays, NumPy `.npy`, single-array and multi-array `.npz`, and Zarr v2 directory stores are done (`crates/tpt-press-arrays`, format `TPAR` v1, with multi-array `.npz` as a `TPBN` bundle). Multi-array design: each member is a full `TPAR` archive, so one array is still read the same way. Zarr: C order, no filters, `null` and `zstd` compressors, with unit tests in `zarr.rs`. Not done: HDF5/NetCDF, and Zarr filters and Blosc. Fortran order and big-endian data are refused
 - [x] Chunked layout with a per-chunk index for random-access slicing. Chunks are stored at their real size at the edges. `read_slice` decodes only the chunks it touches
 - [x] Predictors. Done: XOR and subtraction deltas along the last axis or the row above, and the Lorenzo predictor over up to four axes, each with byte shuffle. The writer picks the filter per chunk from seven. Subtraction wins on smooth floats and slowly changing integers. Lorenzo wins on a 2-D integer image. Not done: a choice of axis other than the last two for the delta filters
 - [~] Benchmarks vs Blosc, zstd with shuffle, and Zarr defaults. Done against gzip, zip and plain zstd, on a synthetic float field (`docs/benchmarks.md`). Not done: Blosc and Zarr, which are not installed here, and any real dataset
@@ -165,5 +165,5 @@ Optional `simd` cargo feature. A scalar fallback always exists, and results must
 - [ ] 2-bit nucleotide packing and unpacking (genomics) via `tpt-simd-bits` and `tpt-simd-permute`
 - [ ] Newline/record splitting for FASTQ and logs via `tpt-simd-search`
 - [ ] Per-chunk CRC32 via `tpt-simd-hash` (core uses a scalar CRC32 today)
-- [ ] Decide: dependency on a pre-release crate (path vs published). `unsafe` must stay inside tpt-simd so `forbid(unsafe_code)` in core still holds
+- [ ] Decide: dependency on a pre-release crate (path vs published). `unsafe` must stay inside tpt-simd so `forbid(unsafe_code)` in core still holds. Decision on record: no dependency for now. The scalar code is the only implementation, and nothing here needs SIMD to be correct. Revisit once there is a benchmark that shows a gap
 - [ ] Benchmark that SIMD beats the compiler's autovectorized scalar code before keeping each kernel

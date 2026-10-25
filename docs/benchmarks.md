@@ -317,3 +317,30 @@ Other checks, all on the same field:
 simulation data. Those are the inputs where the filters would be tested for real.
 Auto now tries seven filters per chunk, so pack time grows with that count. On the
 2000 x 1500 field it packs in about 0.7 s, against about 0.2 s with one filter.
+
+## Exponent split and timestamp encoding (single run each)
+
+- bf16 synthetic Gaussian weights, 1 Mi values (2 MiB), `pack-tensors`
+  defaults. Byte shuffle only: 1,489,317 bytes (71.0%). With the exponent split:
+  1,471,589 bytes (70.2%). The split is a small gain here. Real checkpoints are
+  not measured yet.
+- Logs, 200,000 generated JSON lines (19.8 MB, timestamps 1 to 3 s apart,
+  random level, service, status and latency). Before the Gorilla timestamp
+  column: 1,202,174 bytes (16.5x). After: 973,487 bytes (20.4x), 19% smaller.
+  A full `query` returned every timestamp and level identical to the input.
+
+## Dataset archive vs tar shard (single run each)
+
+`crates/tpt-press-datasets/examples/random_access.rs`. 20,000 samples, each a
+4 KiB random "image" and a ~250-byte JSON record. 86.2 MB of member bytes.
+
+- Tar shard, WebDataset layout: 112,641,024 bytes (130.6% of the member bytes).
+  Each file costs a 512-byte header, plus padding.
+- Dataset archive: 83,807,921 bytes (97.2%).
+- 5,000 random sample reads. Tar with an offset table built from its headers:
+  4.9 to 8.9 ms across two runs. Dataset: 7.5 to 18.4 ms across the same runs.
+
+The comparison is not like for like, and the numbers are noisy between runs. The
+tar side reads the raw bytes at the offsets and does no checksum or
+decompression. The dataset side reads each member, checks its CRC32, and
+decompresses zstd members. The size result is the stronger one.
