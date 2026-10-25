@@ -344,3 +344,18 @@ The comparison is not like for like, and the numbers are noisy between runs. The
 tar side reads the raw bytes at the offsets and does no checksum or
 decompression. The dataset side reads each member, checks its CRC32, and
 decompresses zstd members. The size result is the stronger one.
+
+## Delta against a base model (synthetic, single run)
+
+Base: 1 Mi bf16 values (2 MiB), Gaussian-like with a fixed seed. Fine-tune: the
+same values, with the two lowest mantissa bits changed on about one value in
+four, pseudo-random. This is an assumption about fine-tunes, not a measured
+one. Real fine-tunes are not measured yet.
+
+- Fine-tune packed alone: 735,051 bytes of 1,052,672 raw (including a small
+  extra tensor).
+- Fine-tune packed with `--base`: 137,024 bytes, 18.6% of the standalone size.
+- The round trip is exact, with and without `verify`.
+
+A regular change, the same bit on every eighth value, collapses to a few hundred
+bytes. That is an artifact of the pattern, so it is not reported as a result.

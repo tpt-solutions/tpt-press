@@ -192,7 +192,7 @@ where
             data_len: model.data_len,
         };
         let output = open_shard(&file)?;
-        stats.push(write_archive(&part, &mut input, output, opts)?);
+        stats.push(write_archive(&part, &mut input, output, opts, None)?);
         shards.push(Shard {
             file,
             tensors: group.into_iter().map(|t| t.name).collect(),

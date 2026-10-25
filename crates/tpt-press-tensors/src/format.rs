@@ -65,6 +65,10 @@ pub enum Compression {
     /// exponent bytes, then a zstd frame of the other bytes. Used only for
     /// `BF16` tensors. See `split.rs`.
     Split,
+    /// The piece XOR-ed with the same piece of a base archive, then zstd. The
+    /// XOR is exact, so the original bytes come back. The archive names its base
+    /// in its metadata (`base_id`), and reading needs that base. See `reader.rs`.
+    Delta,
 }
 
 impl Compression {
@@ -74,6 +78,7 @@ impl Compression {
             Compression::Zstd => 1,
             Compression::Shuffled => 2,
             Compression::Split => 3,
+            Compression::Delta => 4,
         }
     }
 
@@ -83,6 +88,7 @@ impl Compression {
             1 => Some(Compression::Zstd),
             2 => Some(Compression::Shuffled),
             3 => Some(Compression::Split),
+            4 => Some(Compression::Delta),
             _ => None,
         }
     }

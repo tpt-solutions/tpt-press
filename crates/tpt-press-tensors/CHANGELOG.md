@@ -19,6 +19,9 @@ the archive format may change between any two versions.
 - Byte-shuffle piece codec for bf16, f16, f32 and f64. It is chosen per piece
   when it is smaller. On a real bf16 checkpoint (SmolLM2-135M) it saves 28 to
   30%, against 22% for plain zstd.
+- Delta packing against a base archive (`pack_with_base`, `--base`): piece code 4.
+  The fine-tune is stored as XOR against the base. Reading needs `Archive::open_with_base`.
+  Measured on a synthetic fine-tune only (see `docs/benchmarks.md`).
 - Exponent/mantissa split piece codec for `BF16` tensors. The exponent goes in
   its own zstd plane, one byte per value, and the sign and mantissa in another.
   On synthetic Gaussian bf16 it archives to 70.2%, against 71.0% for the byte

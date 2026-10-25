@@ -43,6 +43,19 @@ pub enum Error {
     #[error("no tensor named `{0}`")]
     NoSuchTensor(String),
 
+    /// The archive is a delta against a base archive, and no base was given.
+    #[error("this archive is a delta against base {0}, so open it with that base")]
+    BaseNeeded(String),
+
+    /// The base archive given is not the one this archive was packed against.
+    #[error("the base archive is {got}, but this archive was packed against {expected}")]
+    BaseMismatch {
+        /// Identity recorded in this archive.
+        expected: String,
+        /// Identity of the base archive given.
+        got: String,
+    },
+
     /// A tensor's data does not match its checksum.
     #[error("checksum mismatch in tensor `{0}`")]
     ChecksumMismatch(String),

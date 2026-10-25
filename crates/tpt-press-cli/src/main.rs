@@ -199,6 +199,11 @@ enum Command {
         /// written into the output directory. A larger tensor gets a shard to itself.
         #[arg(long, value_name = "BYTES")]
         shard_size: Option<u64>,
+        /// Pack as a delta against this tensor archive, the base. Tensors that
+        /// the base shares are stored as XOR against it. Reading the result
+        /// needs the same --base. Not used with --shard-size.
+        #[arg(long, value_name = "ARCHIVE", conflicts_with = "shard_size")]
+        base: Option<PathBuf>,
     },
     /// Write a tensor archive back out as a safetensors file.
     UnpackTensors {
@@ -206,6 +211,9 @@ enum Command {
         archive: PathBuf,
         /// Safetensors file to write. Removed if unpacking fails.
         output: PathBuf,
+        /// The base, if the archive is a delta against one.
+        #[arg(long, value_name = "ARCHIVE")]
+        base: Option<PathBuf>,
     },
     /// Pack every file under a directory into an assets archive.
     PackAssets {
@@ -285,6 +293,9 @@ enum Command {
         /// Repeat the option to require several conditions.
         #[arg(long = "where", value_name = "COLUMN=VALUE")]
         filters: Vec<String>,
+        /// Tensor archives only: the base, if the archive is a delta against one.
+        #[arg(long, value_name = "ARCHIVE")]
+        base: Option<PathBuf>,
         /// Logs only, in builds with the `strata` feature: run this SQL over the
         /// matching records and print the result. The table is named `logs`.
         #[arg(long, value_name = "SQL")]
@@ -449,11 +460,16 @@ fn main() -> ExitCode {
             output,
             level,
             shard_size,
+            base,
         } => match shard_size {
             Some(bytes) => pack_tensor_shards(&input, &output, bytes, level),
-            None => pack_tensors(&input, &output, level),
+            None => pack_tensors(&input, &output, level, base.as_deref()),
         },
-        Command::UnpackTensors { archive, output } => unpack_tensors(&archive, &output),
+        Command::UnpackTensors {
+            archive,
+            output,
+            base,
+        } => unpack_tensors(&archive, &output, base.as_deref()),
         Command::PackLogs {
             input,
             output,
@@ -522,6 +538,7 @@ fn main() -> ExitCode {
             filters,
             sql,
             output,
+            base,
             passphrase_file,
             identity,
         } => query(
@@ -533,6 +550,7 @@ fn main() -> ExitCode {
             filters,
             sql.as_deref(),
             output.as_deref(),
+            base.as_deref(),
             Credentials {
                 passphrase_file: passphrase_file.as_deref(),
                 identity: identity.as_deref(),
@@ -997,11 +1015,43 @@ fn pack_tensor_shards(
     }
 }
 
-fn pack_tensors(input: &Path, output: &Path, level: i32) -> Result<String, Box<dyn Error>> {
+/// Opens a tensor archive. With `base`, the archive is a delta against that
+/// archive, which is opened too.
+fn open_tensor_archive(
+    path: &Path,
+    base: Option<&Path>,
+) -> Result<tensors::Archive<BufReader<Progress<File>>>, Box<dyn Error>> {
+    let archive = tensors::Archive::open(open_file(path, "reading")?)?;
+    match base {
+        None => Ok(archive),
+        Some(base_path) => {
+            let base_archive = tensors::Archive::open(open_file(base_path, "reading")?)?;
+            Ok(tensors::Archive::open_with_base(
+                open_file(path, "reading")?,
+                base_archive,
+            )?)
+        }
+    }
+}
+
+fn pack_tensors(
+    input: &Path,
+    output: &Path,
+    level: i32,
+    base: Option<&Path>,
+) -> Result<String, Box<dyn Error>> {
     let reader = open_file(input, "packing")?;
     let writer = BufWriter::new(create(output)?);
     let opts = tensors::PackOptions { level };
-    let stats = finish_or_remove(output, || tensors::pack(reader, writer, &opts))?;
+    let stats = match base {
+        None => finish_or_remove(output, || tensors::pack(reader, writer, &opts))?,
+        Some(base_path) => {
+            let mut base_archive = tensors::Archive::open(open_file(base_path, "reading")?)?;
+            finish_or_remove(output, || {
+                tensors::pack_with_base(reader, writer, &opts, &mut base_archive)
+            })?
+        }
+    };
     let ratio = stats.input_bytes as f64 / stats.archive_bytes.max(1) as f64;
     Ok(format!(
         "packed {} tensors in {} pieces ({} compressed): {} -> {} bytes ({ratio:.2}x)",
@@ -1013,8 +1063,12 @@ fn pack_tensors(input: &Path, output: &Path, level: i32) -> Result<String, Box<d
     ))
 }
 
-fn unpack_tensors(archive_path: &Path, output: &Path) -> Result<String, Box<dyn Error>> {
-    let mut archive = tensors::Archive::open(open_file(archive_path, "unpacking")?)?;
+fn unpack_tensors(
+    archive_path: &Path,
+    output: &Path,
+    base: Option<&Path>,
+) -> Result<String, Box<dyn Error>> {
+    let mut archive = open_tensor_archive(archive_path, base)?;
     let writer = BufWriter::new(create(output)?);
     let stats = finish_or_remove(output, || tensors::unpack(&mut archive, writer))?;
     Ok(format!(
@@ -1172,6 +1226,7 @@ fn query(
     filters: Vec<String>,
     sql: Option<&str>,
     output: Option<&Path>,
+    base: Option<&Path>,
     creds: Credentials,
 ) -> Result<String, Box<dyn Error>> {
     if matches!(
@@ -1187,7 +1242,7 @@ fn query(
             return Err("--from, --to, --columns, --where and --sql apply to logs archives".into());
         }
         let name = name.ok_or("a tensor archive needs a tensor name: `query <archive> <name>`")?;
-        return query_tensor(archive, name, output);
+        return query_tensor(archive, name, output, base);
     }
     if name.is_some() || output.is_some() {
         return Err("a tensor name and --output apply to tensor archives".into());
@@ -1205,6 +1260,7 @@ fn query_tensor(
     archive_path: &Path,
     name: &str,
     output: Option<&Path>,
+    base: Option<&Path>,
 ) -> Result<String, Box<dyn Error>> {
     // For a sharded archive, the tensor lives in one of its shard files.
     let archive_path = if archive_path.is_dir() {
@@ -1219,7 +1275,7 @@ fn query_tensor(
         archive_path.to_path_buf()
     };
     let archive_path = archive_path.as_path();
-    let mut archive = tensors::Archive::open(open_file(archive_path, "reading")?)?;
+    let mut archive = open_tensor_archive(archive_path, base)?;
     let bytes = archive
         .tensor(name)
         .ok_or_else(|| format!("no tensor named `{name}` in {}", archive_path.display()))?

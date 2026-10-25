@@ -37,7 +37,7 @@ pub use model::{Model, TensorInfo};
 pub use reader::Archive;
 pub use sharded::{pack_sharded, Manifest, Shard, MANIFEST_FILE};
 pub use unpack::{unpack, Stats as UnpackStats};
-pub use writer::{pack, PackOptions, Stats};
+pub use writer::{pack, pack_with_base, PackOptions, Stats};
 
 /// The tensor archive format written by `pack-tensors`.
 pub struct TensorsArchive;

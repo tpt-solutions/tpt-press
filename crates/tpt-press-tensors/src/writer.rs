@@ -8,7 +8,32 @@ use crate::dtype;
 use crate::error::{map_io, Error, Result};
 use crate::format::{self, Compression, Index, Piece, TensorEntry, HEADER_LEN, MAX_PIECE_BYTES};
 use crate::model::Model;
+use crate::reader::{Archive, BASE_ID_KEY};
 use crate::{gguf, onnx, pytorch, safetensors};
+
+/// Where a delta archive's base pieces come from.
+pub(crate) trait BaseSource {
+    /// The base's identity, recorded in the archive being written.
+    fn identity(&self) -> String;
+    /// Piece `k` of the tensor `name` in the base, or `None` if the base has no
+    /// such piece.
+    fn piece(&mut self, name: &str, k: usize, width: u64) -> Result<Option<Vec<u8>>>;
+}
+
+/// A base archive the writer reads pieces from.
+struct BaseRef<'a, B> {
+    archive: &'a mut Archive<B>,
+}
+
+impl<B: Read + Seek> BaseSource for BaseRef<'_, B> {
+    fn identity(&self) -> String {
+        self.archive.identity()
+    }
+
+    fn piece(&mut self, name: &str, k: usize, width: u64) -> Result<Option<Vec<u8>>> {
+        self.archive.piece_of_tensor(name, k, width)
+    }
+}
 
 /// Options for [`pack`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +59,9 @@ pub struct Stats {
     pub pieces: u64,
     /// Pieces stored compressed. The rest are stored raw.
     pub compressed_pieces: u64,
+    /// Pieces stored as a delta against the base archive. Zero unless the
+    /// archive was packed with [`pack_with_base`].
+    pub delta_pieces: u64,
     /// Total tensor bytes before compression.
     pub input_bytes: u64,
     /// Size of the archive in bytes.
@@ -53,16 +81,40 @@ where
 {
     codec::validate_level(opts.level)?;
     let model = read_model(&mut input)?;
-    write_archive(&model, &mut input, output, opts)
+    write_archive(&model, &mut input, output, opts, None)
+}
+
+/// Packs a model file as a delta against `base`. Each piece is also tried as the
+/// XOR of its bytes with the same piece of the base, when the base has a tensor
+/// of that name with the same size. The XOR is exact, so reading needs the same
+/// base back (see [`crate::Archive::open_with_base`]). The archive records the
+/// base's identity. Tensors the base does not share are stored as usual.
+pub fn pack_with_base<R, W, B>(
+    mut input: R,
+    output: W,
+    opts: &PackOptions,
+    base: &mut Archive<B>,
+) -> Result<Stats>
+where
+    R: Read + Seek,
+    W: Write,
+    B: Read + Seek,
+{
+    codec::validate_level(opts.level)?;
+    let model = read_model(&mut input)?;
+    let mut source = BaseRef { archive: base };
+    write_archive(&model, &mut input, output, opts, Some(&mut source))
 }
 
 /// Writes the tensors of `model`, read from `input`, as one archive. `model`
 /// may hold only some of the file's tensors, which is how shards are written.
+/// With `delta`, pieces are also tried against the base.
 pub(crate) fn write_archive<R, W>(
     model: &Model,
     input: &mut R,
     mut output: W,
     opts: &PackOptions,
+    mut delta: Option<&mut dyn BaseSource>,
 ) -> Result<Stats>
 where
     R: Read + Seek,
@@ -76,6 +128,11 @@ where
         tensors: Vec::with_capacity(model.tensors.len()),
         pieces: Vec::new(),
     };
+    if let Some(source) = &delta {
+        index
+            .metadata
+            .insert(BASE_ID_KEY.to_owned(), source.identity());
+    }
 
     for tensor in &model.tensors {
         let first_piece = index.pieces.len() as u32;
@@ -83,6 +140,7 @@ where
         let unit = dtype::block_bytes(&tensor.dtype)?;
         let piece_bytes = (MAX_PIECE_BYTES / unit) * unit;
         let mut position = 0u64;
+        let mut k = 0usize;
         while position < tensor.byte_len() {
             let len = (tensor.byte_len() - position).min(piece_bytes);
             input
@@ -91,8 +149,13 @@ where
             let mut raw = vec![0u8; len as usize];
             input.read_exact(&mut raw).map_err(map_io)?;
 
+            let base_raw = match &mut delta {
+                Some(source) => source.piece(&tensor.name, k, unit)?,
+                None => None,
+            };
             let is_bf16 = tensor.dtype == "BF16";
-            let (payload, compression) = choose_payload(raw, unit, is_bf16, opts.level)?;
+            let (payload, compression) =
+                choose_payload(raw, unit, is_bf16, base_raw.as_deref(), opts.level)?;
 
             output.write_all(&payload)?;
             index.pieces.push(Piece {
@@ -104,10 +167,14 @@ where
             });
             offset += payload.len() as u64;
             position += len;
+            k += 1;
 
             stats.pieces += 1;
             if compression != Compression::Stored {
                 stats.compressed_pieces += 1;
+            }
+            if compression == Compression::Delta {
+                stats.delta_pieces += 1;
             }
         }
 
@@ -169,9 +236,18 @@ fn choose_payload(
     raw: Vec<u8>,
     width: u64,
     is_bf16: bool,
+    base: Option<&[u8]>,
     level: i32,
 ) -> Result<(Vec<u8>, Compression)> {
     let zstd = codec::compress(&raw, level)?;
+    // A delta needs a base piece of the same length, and is exact by construction.
+    let delta = match base {
+        Some(base) if base.len() == raw.len() => {
+            let xor: Vec<u8> = raw.iter().zip(base).map(|(a, b)| a ^ b).collect();
+            Some(codec::compress(&xor, level)?)
+        }
+        _ => None,
+    };
     let shuffled = if crate::shuffle::supports(width) {
         Some(codec::compress(
             &crate::shuffle::shuffle(&raw, width as usize),
@@ -198,6 +274,11 @@ fn choose_payload(
     if let Some(split) = split {
         if split.len() < best.0.len() {
             best = (split, Compression::Split);
+        }
+    }
+    if let Some(delta) = delta {
+        if delta.len() < best.0.len() {
+            best = (delta, Compression::Delta);
         }
     }
     Ok(best)

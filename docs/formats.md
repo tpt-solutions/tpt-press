@@ -149,6 +149,14 @@ tensor are contiguous in the piece table, in order. `compression` is:
   frame. Payload: `exponent_frame_len u32`, the exponent frame, then the other
   frame. Unsplitting restores the bytes exactly. The writer uses it only for
   `BF16` tensors. Code `3` is new in this version, like code `2` was.
+- `4`: a delta. The piece is XOR-ed byte by byte with the same piece of a base
+  archive, then zstd-compressed. The XOR is exact. The archive records the base's
+  identity in its metadata as `base_id` (the identity is a CRC32 over tensor names,
+  sizes and piece checksums). Reading needs the base: `Archive::open_with_base`, or
+  `--base` in the CLI. A delta piece is only written when the base has the same
+  tensor with the same byte length. Opening a delta archive without its base
+  fails with `BaseNeeded` when a piece is read. The async reader refuses delta
+  archives. Code `4` is new in this version too.
 
 The writer tries every encoding that applies to a piece and keeps the smallest.
 Raw wins ties, so incompressible data is stored as it is. Code `2` is new in

@@ -52,6 +52,11 @@ impl<R: AsyncRead + AsyncSeek + Unpin> AsyncArchive<R> {
         let mut body = vec![0u8; index_len as usize];
         input.read_exact(&mut body).await.map_err(map_io)?;
         let index = finish_index(&body, index_crc, index_offset)?;
+        if index.metadata.contains_key(crate::reader::BASE_ID_KEY) {
+            return Err(Error::Unsupported(
+                "delta archives need the blocking reader, which can open a base",
+            ));
+        }
         Ok(Self { input, index })
     }
 
@@ -118,7 +123,7 @@ impl<R: AsyncRead + AsyncSeek + Unpin> AsyncArchive<R> {
             .map_err(map_io)?;
         let mut stored = vec![0u8; piece.stored_len as usize];
         self.input.read_exact(&mut stored).await.map_err(map_io)?;
-        decode_piece(piece, stored, name, width)
+        decode_piece(piece, stored, name, width, None)
     }
 }
 
