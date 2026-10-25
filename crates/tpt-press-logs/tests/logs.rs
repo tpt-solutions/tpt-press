@@ -104,6 +104,7 @@ fn column_query_decompresses_only_the_columns_it_needs() {
 
     // Without a time range, only the requested column is read.
     let q = Query {
+        equals: Vec::new(),
         columns: Some(vec!["level".to_owned()]),
         ..Query::default()
     };
@@ -112,6 +113,7 @@ fn column_query_decompresses_only_the_columns_it_needs() {
 
     // With a time range, the timestamp column is read as well.
     let q = Query {
+        equals: Vec::new(),
         from: Some(at(0)),
         to: Some(at(100)),
         columns: Some(vec!["level".to_owned()]),
@@ -141,6 +143,7 @@ fn dictionary_is_trained_for_similar_records() {
 fn time_range_returns_only_matching_records() {
     let archive = pack_bytes(&jsonl_input(5000), &small_blocks());
     let q = Query {
+        equals: Vec::new(),
         from: Some(at(1000)),
         to: Some(at(1500)),
         columns: None,
@@ -163,6 +166,7 @@ fn time_range_returns_only_matching_records() {
 fn time_range_skips_blocks_it_does_not_need() {
     let archive = pack_bytes(&jsonl_input(5000), &small_blocks());
     let q = Query {
+        equals: Vec::new(),
         from: Some(at(1000)),
         to: Some(at(1100)),
         columns: None,
@@ -183,6 +187,7 @@ fn records_without_timestamps_are_always_included() {
     let archive = pack_bytes(&input, &small_blocks());
 
     let q = Query {
+        equals: Vec::new(),
         from: Some(at(0)),
         to: Some(at(STEP)),
         columns: None,
@@ -195,6 +200,7 @@ fn records_without_timestamps_are_always_included() {
 fn column_projection_keeps_only_requested_fields() {
     let archive = pack_bytes(&jsonl_input(50), &small_blocks());
     let q = Query {
+        equals: Vec::new(),
         from: None,
         to: None,
         columns: Some(vec!["level".to_owned()]),
@@ -209,6 +215,7 @@ fn column_projection_keeps_only_requested_fields() {
 fn inverted_range_is_rejected() {
     let archive = pack_bytes(&jsonl_input(10), &small_blocks());
     let q = Query {
+        equals: Vec::new(),
         from: Some(at(100)),
         to: Some(at(1)),
         columns: None,
@@ -250,6 +257,7 @@ fn csv_round_trip_and_projection() {
     );
 
     let q = Query {
+        equals: Vec::new(),
         from: None,
         to: None,
         columns: Some(vec!["msg".to_owned(), "level".to_owned()]),
@@ -267,6 +275,7 @@ fn csv_time_range_uses_the_timestamp_column() {
     };
     let archive = pack_bytes(&csv_input(), &opts);
     let q = Query {
+        equals: Vec::new(),
         from: Some(at(100)),
         to: Some(at(200)),
         columns: None,
@@ -283,6 +292,7 @@ fn csv_unknown_column_is_rejected() {
     };
     let archive = pack_bytes(&csv_input(), &opts);
     let q = Query {
+        equals: Vec::new(),
         from: None,
         to: None,
         columns: Some(vec!["nope".to_owned()]),
@@ -429,6 +439,7 @@ fn prometheus_samples_are_queryable_by_time() {
     assert!(last.get("timestamp").is_none());
 
     let range = Query {
+        equals: Vec::new(),
         from: Some(at(100)),
         to: Some(at(190)),
         ..Query::default()
@@ -473,10 +484,56 @@ fn otlp_request_lines_expand_to_their_records() {
     assert_eq!(second["timestamp"], "2026-10-13T00:00:01Z");
 
     let range = Query {
+        equals: Vec::new(),
         from: Some(at(2)),
         to: Some(at(3)),
         ..Query::default()
     };
     let (lines, _) = run_query(&archive, &range).unwrap();
     assert_eq!(lines.len(), 2, "records at seconds 2 and 3 of the window");
+}
+
+#[test]
+fn equality_filters_select_records_by_field_value() {
+    // Every third record is an error; the status field alternates by parity.
+    let input: Vec<String> = (0..300)
+        .map(|i| {
+            let level = if i % 3 == 0 { "error" } else { "info" };
+            format!(
+                "{{\"timestamp\":\"{}\",\"level\":\"{level}\",\"status\":{}}}",
+                rfc3339(i * STEP),
+                200 + (i % 2) * 300
+            )
+        })
+        .collect();
+    let archive = pack_bytes(input.join("\n").as_bytes(), &small_blocks());
+
+    let by_level = Query {
+        equals: vec![("level".to_owned(), "error".to_owned())],
+        ..Query::default()
+    };
+    let (lines, stats) = run_query(&archive, &by_level).unwrap();
+    assert_eq!(lines.len(), 100);
+    assert_eq!(stats.records_matched, 100);
+    assert!(lines.iter().all(|l| l.contains("\"level\":\"error\"")));
+
+    // A number matches its JSON text, and two conditions are ANDed.
+    let both = Query {
+        equals: vec![
+            ("level".to_owned(), "error".to_owned()),
+            ("status".to_owned(), "500".to_owned()),
+        ],
+        ..Query::default()
+    };
+    let (lines, _) = run_query(&archive, &both).unwrap();
+    // Errors are at multiples of 3, and status 500 at odd i. Odd multiples of 3 are every sixth record.
+    assert_eq!(lines.len(), 50);
+
+    // A column the records do not have matches nothing, and unknown columns in
+    // CSV are refused. JSON keys are not known in advance, so none is refused.
+    let missing = Query {
+        equals: vec![("nope".to_owned(), "x".to_owned())],
+        ..Query::default()
+    };
+    assert_eq!(run_query(&archive, &missing).unwrap().0.len(), 0);
 }

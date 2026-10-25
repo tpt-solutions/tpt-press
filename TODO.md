@@ -113,7 +113,7 @@ Non-goals: no image/audio/video recompression. ML datasets store image blobs opa
 - [~] XOR (Gorilla-style) float encoding. Implemented in `tpt-press-logs/src/gorilla.rs`, round-trips NaN, infinities and signed zeros. Measured: worse than plain zstd on quantised readings (27.7 against about 5.3 bits per value), and worse than shuffle-plus-zstd on full-precision floats. Decided: floats are not wired into logs. Logs store cells as text, so the float codec does not apply there, and per-column float choice is already done in arrays (see 7f). Closed as no-op
 - [ ] Per-column dictionaries for labels/tags
 - [x] Reuse block/column directory and time-range index from `logs` (block.rs, inspect.rs). The Prometheus parser feeds the same blocks and index
-- [ ] Query by time range and series/label; `inspect` support
+- [~] Query by time range and series/label; `inspect` support. Done: time range, and label/field equality with `--where COLUMN=VALUE` (ANDed, repeatable). Not done: a series index that avoids reading blocks for a label, and `inspect` by label
 - [~] Benchmarks vs plain zstd and Parquet. zstd and the shuffle are measured in `docs/benchmarks.md`. Parquet is not measured, since no Parquet tool is installed here
 
 ### 7b. ML datasets (`tpt-press-datasets`, builds on `.tpa` + tensors streaming)

@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Cursor::new(&archive),
         &mut rows,
         &Query {
+            equals: Vec::new(),
             from: Some(parse_timestamp("2026-05-01T00:10:00Z")?),
             to: Some(parse_timestamp("2026-05-01T00:12:59Z")?),
             columns: None,

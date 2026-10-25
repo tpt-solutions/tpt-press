@@ -191,6 +191,11 @@ impl Schema {
         self.format
     }
 
+    /// Whether cells are JSON. JSON cells are compared by their value.
+    pub fn is_json(&self) -> bool {
+        self.format.is_json()
+    }
+
     /// The name of the column that holds timestamps.
     pub fn timestamp_field(&self) -> &str {
         &self.timestamp_field

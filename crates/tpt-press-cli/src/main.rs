@@ -281,6 +281,10 @@ enum Command {
         /// Comma-separated columns to output, in order. Outputs whole records if omitted. Logs only.
         #[arg(long, value_delimiter = ',')]
         columns: Option<Vec<String>>,
+        /// Logs only: keep records whose field equals a value, as COLUMN=VALUE.
+        /// Repeat the option to require several conditions.
+        #[arg(long = "where", value_name = "COLUMN=VALUE")]
+        filters: Vec<String>,
         /// Logs only, in builds with the `strata` feature: run this SQL over the
         /// matching records and print the result. The table is named `logs`.
         #[arg(long, value_name = "SQL")]
@@ -515,6 +519,7 @@ fn main() -> ExitCode {
             from,
             to,
             columns,
+            filters,
             sql,
             output,
             passphrase_file,
@@ -525,6 +530,7 @@ fn main() -> ExitCode {
             from.as_deref(),
             to.as_deref(),
             columns,
+            filters,
             sql.as_deref(),
             output.as_deref(),
             Credentials {
@@ -1163,6 +1169,7 @@ fn query(
     from: Option<&str>,
     to: Option<&str>,
     columns: Option<Vec<String>>,
+    filters: Vec<String>,
     sql: Option<&str>,
     output: Option<&Path>,
     creds: Credentials,
@@ -1171,8 +1178,13 @@ fn query(
         ArchiveKind::detect(archive)?,
         ArchiveKind::Tensors | ArchiveKind::Sharded
     ) {
-        if from.is_some() || to.is_some() || columns.is_some() || sql.is_some() {
-            return Err("--from, --to, --columns and --sql apply to logs archives".into());
+        if from.is_some()
+            || to.is_some()
+            || columns.is_some()
+            || sql.is_some()
+            || !filters.is_empty()
+        {
+            return Err("--from, --to, --columns, --where and --sql apply to logs archives".into());
         }
         let name = name.ok_or("a tensor archive needs a tensor name: `query <archive> <name>`")?;
         return query_tensor(archive, name, output);
@@ -1180,7 +1192,7 @@ fn query(
     if name.is_some() || output.is_some() {
         return Err("a tensor name and --output apply to tensor archives".into());
     }
-    let query = logs_query(from, to, columns)?;
+    let query = logs_query(from, to, columns, &filters)?;
     match sql {
         Some(sql) => query_logs_sql(archive, &query, sql, creds),
         None => query_logs(archive, &query, creds),
@@ -1237,8 +1249,19 @@ fn logs_query(
     from: Option<&str>,
     to: Option<&str>,
     columns: Option<Vec<String>>,
+    filters: &[String],
 ) -> Result<Query, Box<dyn Error>> {
+    let equals = filters
+        .iter()
+        .map(|filter| {
+            filter
+                .split_once('=')
+                .map(|(column, value)| (column.to_owned(), value.to_owned()))
+                .ok_or_else(|| format!("--where takes COLUMN=VALUE, got {filter:?}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     Ok(Query {
+        equals,
         from: from.map(logs::parse_timestamp).transpose()?,
         to: to.map(logs::parse_timestamp).transpose()?,
         columns,

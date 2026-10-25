@@ -23,8 +23,10 @@ the archive format may change between any two versions.
   `src/format.rs`.
 - `pack`, with `PackOptions` for format, timestamp field, block size, level and
   dictionary.
-- `query`, with `Query { from, to, columns }`. Blocks outside the time window
-  are skipped from the index, and only the columns asked for are decompressed.
+- `query`, with `Query { from, to, columns, equals }`. `equals` keeps records
+  whose fields match (`--where COLUMN=VALUE`, repeatable, ANDed). Blocks outside
+  the time window are skipped from the index, and only the columns asked for are
+  decompressed.
   `QueryStats` reports the blocks and columns read.
 - `inspect`, which returns a `Summary` (columns, record count, time range and
   sizes) without decompressing any record.

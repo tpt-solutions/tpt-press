@@ -54,6 +54,7 @@ proptest! {
 
         let _ = inspect(Cursor::new(&archive));
         let q = Query {
+        equals: Vec::new(),
             from: Some(time_from),
             to: None,
             columns: Some(vec!["level".to_owned()]),

@@ -176,6 +176,7 @@ fn logs_round_trip_through_a_query_with_a_time_range() {
     .unwrap();
 
     let query = Query {
+        equals: Vec::new(),
         from: Some(logs::parse_timestamp("2026-02-01T05:00:00Z").unwrap()),
         to: Some(logs::parse_timestamp("2026-02-01T05:09:59Z").unwrap()),
         columns: Some(vec!["level".to_owned()]),

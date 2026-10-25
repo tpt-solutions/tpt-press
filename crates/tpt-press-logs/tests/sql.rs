@@ -74,6 +74,7 @@ fn time_range_limits_the_rows_the_sql_sees() {
     let table = query_sql(
         Cursor::new(archive),
         &Query {
+            equals: Vec::new(),
             from: Some(from),
             to: Some(to),
             columns: None,
@@ -89,6 +90,7 @@ fn time_range_limits_the_rows_the_sql_sees() {
 fn requested_columns_are_the_only_ones_in_the_table() {
     let archive = pack_text(&jsonl_levels(), Format::Jsonl);
     let query = Query {
+        equals: Vec::new(),
         columns: Some(vec!["level".to_owned()]),
         ..Query::default()
     };

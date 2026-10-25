@@ -17,6 +17,11 @@ pub struct Query {
     pub to: Option<i64>,
     /// Columns to output, in order. `None` outputs whole records.
     pub columns: Option<Vec<String>>,
+    /// Equality conditions, as `(column, value)`. A record matches when each
+    /// column holds the value. For JSON, a string matches its text, and a number
+    /// or boolean matches its JSON text. A record with no such column does not
+    /// match. Conditions on the same archive are ANDed.
+    pub equals: Vec<(String, String)>,
 }
 
 /// Counts from a completed [`query`].
@@ -79,6 +84,8 @@ where
     if let Some(columns) = &query.columns {
         schema.validate_columns(columns)?;
     }
+    let filter_names: Vec<String> = query.equals.iter().map(|(name, _)| name.clone()).collect();
+    schema.validate_columns(&filter_names)?;
 
     let entries = format::read_index(&mut input)?;
     let mut stats = QueryStats {
@@ -98,6 +105,7 @@ where
         if filter_time {
             wanted.push(schema.timestamp_field());
         }
+        wanted.extend(filter_names.iter().map(String::as_str));
 
         // Decompress each wanted column once, and keep it as cells per record.
         let mut decoded: Vec<(&str, Vec<Vec<u8>>)> = Vec::new();
@@ -134,6 +142,16 @@ where
                         continue;
                     }
                 }
+            }
+            let equal = query.equals.iter().all(|(name, expected)| {
+                let cells = decoded
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, cells)| cells);
+                cell_equals(cells.map(|c| c[i].as_slice()), expected, schema.is_json())
+            });
+            if !equal {
+                continue;
             }
 
             let aligned: Vec<Option<&[u8]>> = output_names
@@ -201,6 +219,21 @@ fn overlaps(entry: &Entry, query: &Query, filter_time: bool) -> bool {
     }
     entry.max_time >= query.from.unwrap_or(i64::MIN)
         && entry.min_time <= query.to.unwrap_or(i64::MAX)
+}
+
+/// Whether a cell holds `expected`. See [`Query::equals`].
+fn cell_equals(cell: Option<&[u8]>, expected: &str, json: bool) -> bool {
+    let Some(cell) = cell.filter(|c| !c.is_empty()) else {
+        return false;
+    };
+    if !json {
+        return cell == expected.as_bytes();
+    }
+    match serde_json::from_slice::<serde_json::Value>(cell) {
+        Ok(serde_json::Value::String(text)) => text == expected,
+        Ok(value) => value.to_string() == expected,
+        Err(_) => false,
+    }
 }
 
 fn in_range(t: i64, query: &Query) -> bool {
