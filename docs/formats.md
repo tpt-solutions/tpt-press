@@ -102,7 +102,7 @@ Gorilla delta-of-delta bit form of the record times (`gorilla.rs`), with no
 newlines. The reader rebuilds the text cells exactly. Other timestamp cells keep
 encoding 0, so the output is the same as the input text.
 
-### Prometheus input
+### Prometheus and OTLP input
 
 With `format` 3, each line is a Prometheus text sample,
 `name{label="value",...} value [timestamp_ms]`. Lines that start with `#`, and
@@ -366,3 +366,12 @@ as it is when its name is a known compressed-media extension (jpg, png, mp4,
 and so on), and otherwise uses zstd only when that is smaller. A stored member
 has `stored_len == raw_len`. Member sizes are capped at 1 GiB, and the index at
 256 MiB.
+
+### OTLP input
+
+With `format` 4, each line is one OTLP JSON `ExportLogsServiceRequest`, which can
+hold several log records. Each record becomes a JSON object: `timestamp` (from
+`timeUnixNano`, or `observedTimeUnixNano` if that is zero), `severity`,
+`severityNumber`, `body`, `traceId` and `spanId` when present, record attributes
+as `attr.<key>`, and resource attributes as `resource.<key>`. Metrics and traces
+are refused.
