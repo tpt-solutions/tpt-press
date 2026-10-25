@@ -141,8 +141,9 @@ enum Command {
         /// Archive to write. Removed if packing fails.
         output: PathBuf,
         /// Record format. Inferred from the file extension if omitted: .csv is
-        /// CSV, .prom is Prometheus text, anything else is JSON Lines.
-        #[arg(long, value_parser = ["jsonl", "csv", "prometheus"])]
+        /// CSV, .prom is Prometheus text, anything else is JSON Lines. OTLP
+        /// JSON log exports need --format otlp.
+        #[arg(long, value_parser = ["jsonl", "csv", "prometheus", "otlp"])]
         format: Option<String>,
         /// Field (JSON) or column (CSV) holding the RFC 3339 timestamp.
         #[arg(long, default_value = "timestamp")]
@@ -787,6 +788,7 @@ fn pack_logs(
     let format = match args.format {
         Some("csv") => Format::Csv,
         Some("prometheus") => Format::Prometheus,
+        Some("otlp") => Format::Otlp,
         Some(_) => Format::Jsonl,
         None => match input.extension().and_then(|e| e.to_str()) {
             Some(ext) if ext.eq_ignore_ascii_case("csv") => Format::Csv,
@@ -1819,6 +1821,7 @@ fn inspect_logs_from<R: Read + Seek>(path: &Path, reader: R) -> Result<String, B
         Format::Jsonl => "jsonl",
         Format::Csv => "csv",
         Format::Prometheus => "prometheus",
+        Format::Otlp => "otlp",
     };
 
     Ok([

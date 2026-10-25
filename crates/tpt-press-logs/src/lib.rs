@@ -15,6 +15,7 @@ mod error;
 mod format;
 pub mod gorilla;
 mod inspect;
+mod otlp;
 mod prometheus;
 mod reader;
 mod schema;

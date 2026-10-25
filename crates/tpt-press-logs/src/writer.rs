@@ -91,7 +91,7 @@ pub fn pack<R: BufRead + Seek, W: Write>(
 
     let csv_header = match opts.format {
         Format::Csv => read_line(&mut input)?.ok_or(Error::MissingHeader)?,
-        Format::Jsonl | Format::Prometheus => Vec::new(),
+        Format::Jsonl | Format::Prometheus | Format::Otlp => Vec::new(),
     };
     let data_start = input.stream_position()?;
     let schema = Schema::new(opts.format, &opts.timestamp_field, &csv_header)?;
@@ -196,10 +196,11 @@ fn train_dictionary<R: BufRead + Seek>(
         if line.is_empty() {
             continue;
         }
-        if let Ok(cells) = schema.cells(&line) {
+        if let Ok(records) = schema.records(&line) {
             samples.extend(
-                cells
+                records
                     .into_iter()
+                    .flatten()
                     .map(|(_, cell)| cell)
                     .filter(|c| !c.is_empty()),
             );
@@ -245,26 +246,27 @@ fn next_block<R: BufRead>(
             return Err(Error::RecordTooLarge(line.len(), MAX_RECORD_SIZE));
         }
 
-        let cells = schema.cells(&line).map_err(|e| match e {
+        let records = schema.records(&line).map_err(|e| match e {
             Error::InvalidRecord(detail) => {
                 Error::InvalidRecord(format!("line {line_no}: {detail}"))
             }
             other => other,
         })?;
-        let timestamp = cells
-            .iter()
-            .find(|(name, _)| name == schema.timestamp_field())
-            .and_then(|(_, cell)| schema.cell_timestamp(cell));
-        match timestamp {
-            Some(t) => {
-                rows.min = Some(rows.min.map_or(t, |m| m.min(t)));
-                rows.max = Some(rows.max.map_or(t, |m| m.max(t)));
+        for cells in records {
+            let timestamp = cells
+                .iter()
+                .find(|(name, _)| name == schema.timestamp_field())
+                .and_then(|(_, cell)| schema.cell_timestamp(cell));
+            match timestamp {
+                Some(t) => {
+                    rows.min = Some(rows.min.map_or(t, |m| m.min(t)));
+                    rows.max = Some(rows.max.map_or(t, |m| m.max(t)));
+                }
+                None => rows.untimed = true,
             }
-            None => rows.untimed = true,
+            rows.records.push(cells);
         }
-
         rows.bytes += line.len() + 1;
-        rows.records.push(cells);
     }
     Ok((!rows.records.is_empty()).then_some(rows))
 }

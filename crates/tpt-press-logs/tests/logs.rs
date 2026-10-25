@@ -438,3 +438,45 @@ fn prometheus_samples_are_queryable_by_time() {
     assert_eq!(lines.len(), 11);
     assert!(stats.blocks_read < stats.blocks_total);
 }
+
+#[test]
+fn otlp_request_lines_expand_to_their_records() {
+    // Three export requests, two log records each, one second apart.
+    let base = at(0) / 1_000_000_000;
+    let mut text = String::new();
+    for request in 0..3i64 {
+        let record = |n: i64| {
+            let nanos = (base + request * 2 + n) * 1_000_000_000;
+            format!(
+                "{{\"timeUnixNano\":\"{nanos}\",\"severityText\":\"INFO\",\"body\":{{\"stringValue\":\"req {request} rec {n}\"}},\"attributes\":[{{\"key\":\"n\",\"value\":{{\"intValue\":\"{n}\"}}}}]}}"
+            )
+        };
+        text.push_str(&format!(
+            "{{\"resourceLogs\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"api\"}}}}]}},\"scopeLogs\":[{{\"logRecords\":[{},{}]}}]}}]}}\n",
+            record(0),
+            record(1)
+        ));
+    }
+    let opts = PackOptions {
+        format: Format::Otlp,
+        block_size: 64,
+        ..PackOptions::default()
+    };
+    let archive = pack_bytes(text.as_bytes(), &opts);
+
+    let (all, stats) = run_query(&archive, &Query::default()).unwrap();
+    assert_eq!(stats.records_matched, 6);
+    let second: serde_json::Value = serde_json::from_str(&all[1]).unwrap();
+    assert_eq!(second["body"], "req 0 rec 1");
+    assert_eq!(second["attr.n"], 1);
+    assert_eq!(second["resource.service.name"], "api");
+    assert_eq!(second["timestamp"], "2026-10-13T00:00:01Z");
+
+    let range = Query {
+        from: Some(at(2)),
+        to: Some(at(3)),
+        ..Query::default()
+    };
+    let (lines, _) = run_query(&archive, &range).unwrap();
+    assert_eq!(lines.len(), 2, "records at seconds 2 and 3 of the window");
+}

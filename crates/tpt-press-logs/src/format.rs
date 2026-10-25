@@ -64,12 +64,15 @@ pub enum Format {
     /// as a JSON object with its metric name, labels, value and timestamp.
     /// `# HELP` and `# TYPE` comment lines are skipped.
     Prometheus,
+    /// OpenTelemetry log exports in OTLP JSON. Each line is one export request,
+    /// which can hold several records. See `otlp.rs`.
+    Otlp,
 }
 
 impl Format {
     /// Whether records are stored as JSON cells, so output is JSON objects.
     pub fn is_json(self) -> bool {
-        matches!(self, Format::Jsonl | Format::Prometheus)
+        matches!(self, Format::Jsonl | Format::Prometheus | Format::Otlp)
     }
 
     fn code(self) -> u8 {
@@ -77,6 +80,7 @@ impl Format {
             Format::Jsonl => 1,
             Format::Csv => 2,
             Format::Prometheus => 3,
+            Format::Otlp => 4,
         }
     }
 
@@ -85,6 +89,7 @@ impl Format {
             1 => Some(Format::Jsonl),
             2 => Some(Format::Csv),
             3 => Some(Format::Prometheus),
+            4 => Some(Format::Otlp),
             _ => None,
         }
     }

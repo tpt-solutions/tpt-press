@@ -8,6 +8,7 @@ use time::OffsetDateTime;
 
 use crate::error::{Error, Result};
 use crate::format::Format;
+use crate::otlp;
 use crate::prometheus;
 
 const EMPTY: &[u8] = b"";
@@ -25,7 +26,7 @@ impl Schema {
     /// Builds the schema. For CSV, `csv_header` must be the header line.
     pub fn new(format: Format, timestamp_field: &str, csv_header: &[u8]) -> Result<Self> {
         let header = match format {
-            Format::Jsonl | Format::Prometheus => Vec::new(),
+            Format::Jsonl | Format::Prometheus | Format::Otlp => Vec::new(),
             Format::Csv => {
                 if csv_header.is_empty() {
                     return Err(Error::MissingHeader);
@@ -66,6 +67,27 @@ impl Schema {
         self.format == Format::Prometheus && prometheus::is_comment(line)
     }
 
+    /// Splits one line into its records, each as `(column, cell)` pairs. Most
+    /// formats have one record per line. OTLP lines can hold several.
+    pub fn records(&self, line: &[u8]) -> Result<Vec<Vec<(String, Vec<u8>)>>> {
+        if self.format != Format::Otlp {
+            return Ok(vec![self.cells(line)?]);
+        }
+        otlp::parse_request(line, &self.timestamp_field)?
+            .into_iter()
+            .map(|fields| {
+                fields
+                    .into_iter()
+                    .map(|(name, value)| {
+                        serde_json::to_vec(&value)
+                            .map(|cell| (name, cell))
+                            .map_err(|e| Error::InvalidRecord(e.to_string()))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Splits one record into `(column, cell)` pairs. Raises an error if the record
     /// does not fit the format.
     ///
@@ -73,6 +95,9 @@ impl Schema {
     /// pair. For CSV, each cell is the field text, and every header column has one.
     pub fn cells(&self, line: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         match self.format {
+            Format::Otlp => Err(Error::InvalidRecord(
+                "an OTLP line can hold several records, so it is read with records()".to_owned(),
+            )),
             Format::Prometheus => prometheus::parse_sample(line, &self.timestamp_field)?
                 .into_iter()
                 .map(|(k, v)| {
@@ -122,7 +147,7 @@ impl Schema {
     pub fn block_columns(&self, rows: &[Vec<(String, Vec<u8>)>]) -> Vec<String> {
         match self.format {
             Format::Csv => self.header.clone(),
-            Format::Jsonl | Format::Prometheus => rows
+            Format::Jsonl | Format::Prometheus | Format::Otlp => rows
                 .iter()
                 .flatten()
                 .map(|(k, _)| k.clone())
@@ -136,7 +161,7 @@ impl Schema {
     /// `None` if the cell is empty, or is not RFC 3339.
     pub fn cell_timestamp(&self, cell: &[u8]) -> Option<i64> {
         match self.format {
-            Format::Jsonl | Format::Prometheus => {
+            Format::Jsonl | Format::Prometheus | Format::Otlp => {
                 if cell.is_empty() {
                     return None;
                 }
@@ -153,7 +178,7 @@ impl Schema {
     pub fn render_timestamp_cell(&self, nanos: i64) -> Vec<u8> {
         let text = format_timestamp(nanos);
         match self.format {
-            Format::Jsonl | Format::Prometheus => {
+            Format::Jsonl | Format::Prometheus | Format::Otlp => {
                 serde_json::to_vec(&Value::String(text)).unwrap_or_default()
             }
             Format::Csv => text.into_bytes(),
@@ -182,7 +207,7 @@ impl Schema {
         omit_absent: bool,
     ) -> Result<Vec<u8>> {
         match self.format {
-            Format::Jsonl | Format::Prometheus => {
+            Format::Jsonl | Format::Prometheus | Format::Otlp => {
                 let mut out = Map::new();
                 for (name, cell) in names.iter().zip(cells) {
                     match cell {

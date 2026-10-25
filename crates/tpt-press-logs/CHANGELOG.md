@@ -12,11 +12,12 @@ the archive format may change between any two versions.
   every record's time is in canonical form and it compresses smaller. On a
   200,000-record sample the archive shrank 19% (1,202,174 to 973,487 bytes), and
   the round trip is exact.
+- OpenTelemetry log exports in OTLP JSON (`--format otlp`). Each line is one export request, and it expands to one record per log record. Attributes are flattened as `attr.<key>`, resource attributes as `resource.<key>`. Metrics and traces are refused.
 - Prometheus text exposition input (`--format prometheus`, or a `.prom` file).
   Comment lines are skipped. Samples are stored as JSON objects, so queries and
   time ranges work as for JSON Lines.
-- `TPLG` archive format, version 3 (footer `TPLX`), for JSON Lines, CSV and Prometheus text samples.
-  Version 3 adds an encoding byte to each block column. (footer `TPLX`), for JSON Lines, CSV and Prometheus text samples.
+- `TPLG` archive format, version 3 (footer `TPLX`), for JSON Lines, CSV, Prometheus
+  text and OTLP JSON. Version 3 adds an encoding byte to each block column.
   Records are grouped into blocks of about 256 KiB by default, and each block
   records its time range. The layout is documented at the top of
   `src/format.rs`.
