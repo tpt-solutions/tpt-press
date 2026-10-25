@@ -366,3 +366,75 @@ fn non_archive_is_rejected() {
         Err(Error::BadMagic)
     ));
 }
+
+#[test]
+fn non_canonical_timestamps_round_trip_as_written() {
+    // The offset form parses to the same instant as the canonical `Z` form, but
+    // is not what the archive would print. Such a column is stored as text.
+    let input: Vec<String> = (0..500)
+        .map(|i| {
+            format!(
+                "{{\"timestamp\":\"{}\",\"level\":\"info\",\"n\":{i}}}",
+                rfc3339(i * STEP).replace('Z', "+00:00")
+            )
+        })
+        .collect();
+    let archive = pack_bytes(input.join("\n").as_bytes(), &small_blocks());
+    let (lines, stats) = run_query(&archive, &Query::default()).unwrap();
+
+    assert_eq!(stats.records_matched, 500);
+    let actual: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let expected: Vec<serde_json::Value> = input
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(lines[1].contains("+00:00"), "{}", lines[1]);
+}
+
+#[test]
+fn prometheus_samples_are_queryable_by_time() {
+    let mut text = String::from(
+        "# HELP http_requests_total Total requests.\n# TYPE http_requests_total counter\n",
+    );
+    for i in 0..400i64 {
+        // Millisecond timestamps, one every 10 seconds.
+        text.push_str(&format!(
+            "http_requests_total{{code=\"200\",path=\"/a\\\"b\"}} {} {}\n",
+            i * 3,
+            (at(i * STEP) / 1_000_000)
+        ));
+    }
+    text.push_str("up 1\n");
+    let opts = PackOptions {
+        format: Format::Prometheus,
+        block_size: 2048,
+        ..PackOptions::default()
+    };
+    let archive = pack_bytes(text.as_bytes(), &opts);
+
+    let (all, stats) = run_query(&archive, &Query::default()).unwrap();
+    assert_eq!(stats.records_matched, 401);
+    let first: serde_json::Value = serde_json::from_str(&all[0]).unwrap();
+    assert_eq!(first["metric"], "http_requests_total");
+    assert_eq!(first["code"], "200");
+    assert_eq!(first["path"], "/a\"b");
+    assert_eq!(first["value"].as_f64(), Some(0.0));
+    assert_eq!(first["timestamp"], "2026-10-13T00:00:00Z");
+    let last: serde_json::Value = serde_json::from_str(all.last().unwrap()).unwrap();
+    assert_eq!(last["metric"], "up");
+    assert!(last.get("timestamp").is_none());
+
+    let range = Query {
+        from: Some(at(100)),
+        to: Some(at(190)),
+        ..Query::default()
+    };
+    let (lines, stats) = run_query(&archive, &range).unwrap();
+    // Ten samples fall in the window, plus the untimed `up` sample, which is always included.
+    assert_eq!(lines.len(), 11);
+    assert!(stats.blocks_read < stats.blocks_total);
+}

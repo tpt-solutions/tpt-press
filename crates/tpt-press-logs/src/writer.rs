@@ -5,9 +5,10 @@ use std::io::{self, BufRead, Seek, SeekFrom, Write};
 use rayon::prelude::*;
 use tpt_press_core::codec;
 
-use crate::block;
+use crate::block::{self, Encoding, Stream};
 use crate::error::{Error, Result};
 use crate::format::{self, Entry, Format, Header};
+use crate::gorilla;
 use crate::schema::Schema;
 
 /// Default uncompressed size at which a block is closed.
@@ -90,7 +91,7 @@ pub fn pack<R: BufRead + Seek, W: Write>(
 
     let csv_header = match opts.format {
         Format::Csv => read_line(&mut input)?.ok_or(Error::MissingHeader)?,
-        Format::Jsonl => Vec::new(),
+        Format::Jsonl | Format::Prometheus => Vec::new(),
     };
     let data_start = input.stream_position()?;
     let schema = Schema::new(opts.format, &opts.timestamp_field, &csv_header)?;
@@ -237,7 +238,7 @@ fn next_block<R: BufRead>(
             break;
         };
         *line_no += 1;
-        if line.is_empty() {
+        if line.is_empty() || schema.skips(&line) {
             continue;
         }
         if line.len() > MAX_RECORD_SIZE {
@@ -268,21 +269,46 @@ fn next_block<R: BufRead>(
     Ok((!rows.records.is_empty()).then_some(rows))
 }
 
-/// Turns a block's records into one raw stream per column. Each stream has one
-/// cell per record, and each cell ends with `\n`.
-fn build_columns(schema: &Schema, records: &[Vec<(String, Vec<u8>)>]) -> Vec<(String, Vec<u8>)> {
+/// Turns a block's records into one stream per column. Each text stream has one
+/// cell per record, and each cell ends with `\n`. The timestamp column also gets
+/// the Gorilla encoding, but only when every record's cell is the canonical
+/// text for its time, so the reader can rebuild the cells exactly.
+fn build_columns(schema: &Schema, records: &[Vec<(String, Vec<u8>)>]) -> Vec<Stream> {
     let names = schema.block_columns(records);
+    let times = canonical_timestamps(schema, records);
     names
         .into_iter()
         .map(|name| {
-            let mut stream = Vec::new();
+            let mut text = Vec::new();
             for record in records {
                 if let Some((_, cell)) = record.iter().find(|(n, _)| *n == name) {
-                    stream.extend_from_slice(cell);
+                    text.extend_from_slice(cell);
                 }
-                stream.push(b'\n');
+                text.push(b'\n');
             }
-            (name, stream)
+            let mut candidates = vec![(Encoding::Text, text)];
+            if name == schema.timestamp_field() {
+                if let Some(times) = &times {
+                    candidates.push((Encoding::Timestamps, gorilla::encode_timestamps(times)));
+                }
+            }
+            Stream { name, candidates }
+        })
+        .collect()
+}
+
+/// The time of every record, if each record's timestamp cell is the canonical
+/// text for that time. `None` if any record lacks a timestamp, or has one in
+/// another form.
+fn canonical_timestamps(schema: &Schema, records: &[Vec<(String, Vec<u8>)>]) -> Option<Vec<i64>> {
+    records
+        .iter()
+        .map(|record| {
+            let (_, cell) = record
+                .iter()
+                .find(|(name, _)| name == schema.timestamp_field())?;
+            let nanos = schema.cell_timestamp(cell)?;
+            (schema.render_timestamp_cell(nanos) == *cell).then_some(nanos)
         })
         .collect()
 }

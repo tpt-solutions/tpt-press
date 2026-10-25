@@ -2,9 +2,10 @@
 
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use crate::block::{self, Directory};
+use crate::block::{self, Directory, Encoding};
 use crate::error::{Error, Result};
 use crate::format::{self, Entry};
+use crate::gorilla;
 use crate::schema::Schema;
 
 /// What to select from an archive.
@@ -108,6 +109,10 @@ where
                 continue;
             };
             let raw = block::decode_column(&payload, column, &header.dictionary)?;
+            let raw = match column.encoding {
+                Encoding::Text => raw,
+                Encoding::Timestamps => timestamp_text(&raw, dir.records, &schema)?,
+            };
             stats.columns_read += 1;
             let cells = split_cells(&raw)?;
             if cells.len() != dir.records as usize {
@@ -167,6 +172,18 @@ fn split_cells(raw: &[u8]) -> Result<Vec<Vec<u8>>> {
         .strip_suffix(b"\n")
         .ok_or(Error::Corrupt("column stream is not newline-terminated"))?;
     Ok(body.split(|&b| b == b'\n').map(<[u8]>::to_vec).collect())
+}
+
+/// Rebuilds the text cells of a `Timestamps` column: one cell per record, each
+/// followed by `\n`, as a text column stores them.
+fn timestamp_text(raw: &[u8], records: u32, schema: &Schema) -> Result<Vec<u8>> {
+    let times = gorilla::decode_timestamps(raw, records as usize)?;
+    let mut out = Vec::new();
+    for nanos in times {
+        out.extend_from_slice(&schema.render_timestamp_cell(nanos));
+        out.push(b'\n');
+    }
+    Ok(out)
 }
 
 /// Checks that a block's directory agrees with the index.

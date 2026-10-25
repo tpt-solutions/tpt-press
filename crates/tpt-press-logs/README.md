@@ -9,7 +9,7 @@ Use it for logs you keep and search: application logs, request logs, event
 streams. A query like "warnings from 10:00 to 10:05, showing timestamp and
 level" touches a small fraction of the archive.
 
-> **Status:** pre-0.1. Format version 2, which may change before 1.0. Nothing is
+> **Status:** pre-0.1. Format version 3, which may change before 1.0. Nothing is
 > published to crates.io yet, and the optional SQL feature takes a git
 > dependency.
 

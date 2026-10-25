@@ -1,4 +1,5 @@
-//! On-disk layout of a logs archive, version 2.
+//! On-disk layout of a logs archive, version 3. Version 3 adds a per-column
+//! encoding byte to block directories (see `block.rs`).
 //!
 //! ```text
 //! header: magic "TPLG" | version u16 | format u8 | reserved u8
@@ -25,7 +26,7 @@ pub const MAGIC: [u8; 4] = *b"TPLG";
 pub const FOOTER_MAGIC: [u8; 4] = *b"TPLX";
 
 /// Version written by this build and the only one it reads.
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 3;
 
 /// Size of the footer in bytes.
 pub const FOOTER_LEN: u64 = 20;
@@ -59,13 +60,23 @@ pub enum Format {
     Jsonl,
     /// Comma-separated values with a header line.
     Csv,
+    /// Prometheus text exposition samples, one per line. Each sample is stored
+    /// as a JSON object with its metric name, labels, value and timestamp.
+    /// `# HELP` and `# TYPE` comment lines are skipped.
+    Prometheus,
 }
 
 impl Format {
+    /// Whether records are stored as JSON cells, so output is JSON objects.
+    pub fn is_json(self) -> bool {
+        matches!(self, Format::Jsonl | Format::Prometheus)
+    }
+
     fn code(self) -> u8 {
         match self {
             Format::Jsonl => 1,
             Format::Csv => 2,
+            Format::Prometheus => 3,
         }
     }
 
@@ -73,6 +84,7 @@ impl Format {
         match code {
             1 => Some(Format::Jsonl),
             2 => Some(Format::Csv),
+            3 => Some(Format::Prometheus),
             _ => None,
         }
     }

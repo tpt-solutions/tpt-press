@@ -6,8 +6,9 @@
 //! changes little has few meaningful bits. Both are bit-packed, and the element
 //! count is not stored, so callers record it alongside the bytes.
 //!
-//! These are the building blocks. They are not yet wired into the logs format,
-//! and there is no query by series or label yet.
+//! The timestamp encoding is used by the logs format for timestamp columns
+//! whose cells are canonical (see `block.rs`). The float encoding is not wired
+//! in, and there is no query by series or label yet.
 
 use crate::error::{Error, Result};
 

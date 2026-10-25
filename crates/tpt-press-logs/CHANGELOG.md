@@ -8,7 +8,15 @@ the archive format may change between any two versions.
 
 ### Added
 
-- `TPLG` archive format, version 2 (footer `TPLX`), for JSON Lines and CSV.
+- Gorilla delta-of-delta encoding for timestamp columns. A block uses it when
+  every record's time is in canonical form and it compresses smaller. On a
+  200,000-record sample the archive shrank 19% (1,202,174 to 973,487 bytes), and
+  the round trip is exact.
+- Prometheus text exposition input (`--format prometheus`, or a `.prom` file).
+  Comment lines are skipped. Samples are stored as JSON objects, so queries and
+  time ranges work as for JSON Lines.
+- `TPLG` archive format, version 3 (footer `TPLX`), for JSON Lines, CSV and Prometheus text samples.
+  Version 3 adds an encoding byte to each block column. (footer `TPLX`), for JSON Lines, CSV and Prometheus text samples.
   Records are grouped into blocks of about 256 KiB by default, and each block
   records its time range. The layout is documented at the top of
   `src/format.rs`.

@@ -35,7 +35,7 @@ pub fn query_sql<R: Read + Seek>(input: R, query: &Query, sql: &str) -> Result<T
     let mut raw = RawTable::default();
     let mut json = false;
     scan(input, query, |schema, names, cells| {
-        json = schema.format() == Format::Jsonl;
+        json = schema.format().is_json();
         raw.push_row(names, cells);
         Ok(())
     })?;

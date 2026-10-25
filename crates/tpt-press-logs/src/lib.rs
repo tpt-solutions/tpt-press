@@ -15,6 +15,7 @@ mod error;
 mod format;
 pub mod gorilla;
 mod inspect;
+mod prometheus;
 mod reader;
 mod schema;
 #[cfg(feature = "strata")]

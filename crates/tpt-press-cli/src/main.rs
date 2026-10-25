@@ -141,7 +141,7 @@ enum Command {
         output: PathBuf,
         /// Record format. Inferred from the file extension if omitted: .csv is
         /// CSV, anything else is JSON Lines.
-        #[arg(long, value_parser = ["jsonl", "csv"])]
+        #[arg(long, value_parser = ["jsonl", "csv", "prometheus"])]
         format: Option<String>,
         /// Field (JSON) or column (CSV) holding the RFC 3339 timestamp.
         #[arg(long, default_value = "timestamp")]
@@ -746,14 +746,13 @@ fn pack_logs(
 ) -> Result<String, Box<dyn Error>> {
     let format = match args.format {
         Some("csv") => Format::Csv,
+        Some("prometheus") => Format::Prometheus,
         Some(_) => Format::Jsonl,
-        None if input
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("csv")) =>
-        {
-            Format::Csv
-        }
-        None => Format::Jsonl,
+        None => match input.extension().and_then(|e| e.to_str()) {
+            Some(ext) if ext.eq_ignore_ascii_case("csv") => Format::Csv,
+            Some(ext) if ext.eq_ignore_ascii_case("prom") => Format::Prometheus,
+            _ => Format::Jsonl,
+        },
     };
     let opts = logs::PackOptions {
         format,
@@ -1729,6 +1728,7 @@ fn inspect_logs_from<R: Read + Seek>(path: &Path, reader: R) -> Result<String, B
     let format = match summary.format {
         Format::Jsonl => "jsonl",
         Format::Csv => "csv",
+        Format::Prometheus => "prometheus",
     };
 
     Ok([

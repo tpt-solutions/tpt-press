@@ -8,6 +8,7 @@ use time::OffsetDateTime;
 
 use crate::error::{Error, Result};
 use crate::format::Format;
+use crate::prometheus;
 
 const EMPTY: &[u8] = b"";
 
@@ -24,7 +25,7 @@ impl Schema {
     /// Builds the schema. For CSV, `csv_header` must be the header line.
     pub fn new(format: Format, timestamp_field: &str, csv_header: &[u8]) -> Result<Self> {
         let header = match format {
-            Format::Jsonl => Vec::new(),
+            Format::Jsonl | Format::Prometheus => Vec::new(),
             Format::Csv => {
                 if csv_header.is_empty() {
                     return Err(Error::MissingHeader);
@@ -59,6 +60,12 @@ impl Schema {
         Ok(())
     }
 
+    /// Whether a line is not a record at all, and is dropped without an error.
+    /// For Prometheus, that covers `#` comment lines.
+    pub fn skips(&self, line: &[u8]) -> bool {
+        self.format == Format::Prometheus && prometheus::is_comment(line)
+    }
+
     /// Splits one record into `(column, cell)` pairs. Raises an error if the record
     /// does not fit the format.
     ///
@@ -66,6 +73,14 @@ impl Schema {
     /// pair. For CSV, each cell is the field text, and every header column has one.
     pub fn cells(&self, line: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         match self.format {
+            Format::Prometheus => prometheus::parse_sample(line, &self.timestamp_field)?
+                .into_iter()
+                .map(|(k, v)| {
+                    serde_json::to_vec(&v)
+                        .map(|cell| (k, cell))
+                        .map_err(|e| Error::InvalidRecord(e.to_string()))
+                })
+                .collect(),
             Format::Jsonl => {
                 let value: Value = serde_json::from_slice(line)
                     .map_err(|e| Error::InvalidRecord(e.to_string()))?;
@@ -107,7 +122,7 @@ impl Schema {
     pub fn block_columns(&self, rows: &[Vec<(String, Vec<u8>)>]) -> Vec<String> {
         match self.format {
             Format::Csv => self.header.clone(),
-            Format::Jsonl => rows
+            Format::Jsonl | Format::Prometheus => rows
                 .iter()
                 .flatten()
                 .map(|(k, _)| k.clone())
@@ -121,7 +136,7 @@ impl Schema {
     /// `None` if the cell is empty, or is not RFC 3339.
     pub fn cell_timestamp(&self, cell: &[u8]) -> Option<i64> {
         match self.format {
-            Format::Jsonl => {
+            Format::Jsonl | Format::Prometheus => {
                 if cell.is_empty() {
                     return None;
                 }
@@ -129,6 +144,19 @@ impl Schema {
                 parse_time(value.as_str()?)
             }
             Format::Csv => parse_time(std::str::from_utf8(cell).ok()?),
+        }
+    }
+
+    /// The timestamp cell for Unix nanoseconds, as the timestamp column stores
+    /// it: a JSON string, or the bare text for CSV. For a cell written in the
+    /// canonical form, `cell_timestamp` followed by this gives back the cell.
+    pub fn render_timestamp_cell(&self, nanos: i64) -> Vec<u8> {
+        let text = format_timestamp(nanos);
+        match self.format {
+            Format::Jsonl | Format::Prometheus => {
+                serde_json::to_vec(&Value::String(text)).unwrap_or_default()
+            }
+            Format::Csv => text.into_bytes(),
         }
     }
 
@@ -154,7 +182,7 @@ impl Schema {
         omit_absent: bool,
     ) -> Result<Vec<u8>> {
         match self.format {
-            Format::Jsonl => {
+            Format::Jsonl | Format::Prometheus => {
                 let mut out = Map::new();
                 for (name, cell) in names.iter().zip(cells) {
                     match cell {

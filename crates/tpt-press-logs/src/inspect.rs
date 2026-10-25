@@ -85,7 +85,7 @@ pub fn inspect<R: Read + Seek>(mut input: R) -> Result<Summary> {
         }
     }
 
-    if summary.format == Format::Jsonl {
+    if summary.format.is_json() {
         columns.sort();
     }
     summary.columns = columns;
