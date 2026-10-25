@@ -1,0 +1,24 @@
+[package]
+name = "tpt-press-datasets"
+description = "Sharded ML training datasets: samples grouped by key, random access, WebDataset tar import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["dataset", "webdataset", "machine-learning", "archive", "compression"]
+categories = ["compression", "science", "filesystem"]
+
+[lints]
+workspace = true
+
+[dependencies]
+crc32fast = "1.5.2"
+tar = "0.4.46"
+thiserror = "2.0.21"
+tpt-press-core = { path = "../tpt-press-core", version = "0.1.0" }
+
+[dev-dependencies]

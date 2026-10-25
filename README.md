@@ -19,6 +19,7 @@ structure of the data they compress: game assets, ML model weights, and logs.
 | [`tpt-press-logs`](crates/tpt-press-logs/README.md) | JSON/CSV/log archiving with dictionaries and time indexing. `query --sql` with the `strata` feature |
 | [`tpt-press-genomics`](crates/tpt-press-genomics/README.md) | Lossless FASTA/FASTQ archiving with context-mixed bases and qualities, and random access by name |
 | [`tpt-press-arrays`](crates/tpt-press-arrays/README.md) | Lossless chunked n-dimensional arrays, with `.npy` support and slice reads |
+| [`tpt-press-datasets`](crates/tpt-press-datasets/README.md) | Sharded training datasets: samples grouped by key, random access, WebDataset tar import |
 | [`tpt-press-cli`](crates/tpt-press-cli/README.md) | The `tpt-press` command-line tool |
 
 The libraries are the primary product. The CLI is a thin consumer of them. Each

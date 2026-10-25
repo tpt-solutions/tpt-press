@@ -25,6 +25,7 @@ use tpt_press_core::Chunking;
 use tpt_press_core::{
     open_archive, open_with_identities, pack_encrypted, pack_for_recipients, Error as CoreError,
 };
+use tpt_press_datasets as datasets;
 use tpt_press_genomics::{self as genomics, GenomicsArchive};
 use tpt_press_logs::{self as logs, Format, LogsArchive, Query, DEFAULT_BLOCK_SIZE};
 use tpt_press_tensors::{self as tensors, TensorsArchive};
@@ -140,7 +141,7 @@ enum Command {
         /// Archive to write. Removed if packing fails.
         output: PathBuf,
         /// Record format. Inferred from the file extension if omitted: .csv is
-        /// CSV, anything else is JSON Lines.
+        /// CSV, .prom is Prometheus text, anything else is JSON Lines.
         #[arg(long, value_parser = ["jsonl", "csv", "prometheus"])]
         format: Option<String>,
         /// Field (JSON) or column (CSV) holding the RFC 3339 timestamp.
@@ -230,6 +231,24 @@ enum Command {
         /// Assets archive to read.
         archive: PathBuf,
         /// Also check every asset's checksum.
+        #[arg(long)]
+        verify: bool,
+    },
+    /// Convert a WebDataset tar (files named `<key>.<member>`) into a dataset archive.
+    ImportDataset {
+        /// Tar file to read.
+        input: PathBuf,
+        /// Dataset archive to write. Removed if importing fails.
+        output: PathBuf,
+        /// zstd compression level for members that are not compressed media.
+        #[arg(long, default_value_t = DEFAULT_LEVEL, value_parser = clap::value_parser!(i32).range(i64::from(MIN_LEVEL)..=i64::from(MAX_LEVEL)))]
+        level: i32,
+    },
+    /// List the first samples of a dataset archive.
+    ListDataset {
+        /// Dataset archive to read.
+        archive: PathBuf,
+        /// Also check every member's checksum.
         #[arg(long)]
         verify: bool,
     },
@@ -513,6 +532,12 @@ fn main() -> ExitCode {
             output_dir,
         } => unpack_assets(&archive, &output_dir),
         Command::ListAssets { archive, verify } => list_assets(&archive, verify),
+        Command::ImportDataset {
+            input,
+            output,
+            level,
+        } => import_dataset(&input, &output, level),
+        Command::ListDataset { archive, verify } => list_dataset(&archive, verify),
     };
 
     match result {
@@ -1060,6 +1085,46 @@ fn list_assets(archive_path: &Path, verify: bool) -> Result<String, Box<dyn Erro
     }
     Ok(lines.join("\n"))
 }
+
+/// Converts a WebDataset tar into a dataset archive.
+fn import_dataset(input: &Path, output: &Path, level: i32) -> Result<String, Box<dyn Error>> {
+    let reader = BufReader::new(
+        File::open(input).map_err(|e| format!("cannot read {}: {e}", input.display()))?,
+    );
+    let writer = BufWriter::new(create(output)?);
+    let stats = finish_or_remove(output, || datasets::import_tar(reader, writer, level))?;
+    Ok(format!(
+        "imported {} samples ({} members), skipped {} non-member entries: {} -> {} bytes",
+        stats.samples, stats.members, stats.skipped, stats.input_bytes, stats.archive_bytes
+    ))
+}
+
+/// Lists the first samples of a dataset archive, and optionally checks them all.
+fn list_dataset(archive: &Path, verify: bool) -> Result<String, Box<dyn Error>> {
+    let reader = BufReader::new(
+        File::open(archive).map_err(|e| format!("cannot read {}: {e}", archive.display()))?,
+    );
+    let mut dataset = datasets::Dataset::open(reader)?;
+    let mut lines = vec![format!("{} samples", dataset.len())];
+    for index in 0..dataset.len().min(LIST_LIMIT) {
+        lines.push(format!(
+            "{}  [{}]",
+            dataset.key(index)?,
+            dataset.member_names(index)?.join(", ")
+        ));
+    }
+    if dataset.len() > LIST_LIMIT {
+        lines.push(format!("... {} more", dataset.len() - LIST_LIMIT));
+    }
+    if verify {
+        dataset.verify()?;
+        lines.push("all checksums match".to_owned());
+    }
+    Ok(lines.join("\n"))
+}
+
+/// How many samples `list-dataset` prints.
+const LIST_LIMIT: usize = 20;
 
 /// `query` on a tensor archive outputs one tensor. On a logs archive it
 /// outputs matching records, or the result of `--sql`.
