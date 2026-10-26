@@ -51,6 +51,10 @@ pub enum Error {
     #[error("cannot encrypt archive: {0}")]
     Encrypt(String),
 
+    /// A public key or identity string is malformed, or of the wrong kind.
+    #[error("invalid key: {0}")]
+    InvalidKey(String),
+
     /// The archive ends before its end marker, so it was cut short.
     #[error("archive is truncated")]
     Truncated,

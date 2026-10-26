@@ -36,7 +36,7 @@ tpt-press pack-tensors model.safetensors model.tptn    # also PyTorch, GGUF, ONN
 tpt-press pack-tensors model.safetensors shards/ --shard-size 1000000000
 tpt-press query model.tptn embed.weight > embed.bin
 tpt-press pack-assets assets/ game.tpa --store
-tpt-press keygen me.key && tpt-press pack big.bin big.tppr --recipient age1...
+tpt-press keygen me.key && tpt-press pack big.bin big.tppr --recipient tptpub1...
 tpt-press pack-genomics genome.fna genome.tpgn         # FASTA or FASTQ
 tpt-press fetch-genomics genome.tpgn chr1 --start 1000 --end 1100
 tpt-press pack-arrays field.npy field.tpar             # .npy keeps its header

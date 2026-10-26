@@ -54,7 +54,7 @@ CLI on Linux, Windows and macOS, but it has not been run on GitHub.
 |---------|--------------|
 | `pack` | Compress any file into a generic archive |
 | `unpack` | Restore the original file |
-| `keygen` | Create an age identity, and print its public key |
+| `keygen` | Create an identity, and print its public key |
 | `inspect` | Show an archive's structure and ratio. Detects every archive type |
 | `pack-logs` | Compress JSON Lines or CSV into a time-indexed logs archive |
 | `query` | Print the records in a time range, with chosen columns, or run SQL |
@@ -87,7 +87,7 @@ size of each chunk, up to 64 MiB. With `--content-defined`, it is the average.
 
 ## Encryption
 
-Passphrase or public key, both using age:
+Passphrase or public key:
 
 ```sh
 # Passphrase: prompts, or read it from a file.
@@ -96,8 +96,8 @@ tpt-press pack secret.txt secret.tppr --passphrase-file pass.txt
 tpt-press unpack secret.tppr secret.txt            # prompts for the passphrase
 
 # Public keys. Create an identity once, and give senders the public key.
-tpt-press keygen me.key                             # prints age1...
-tpt-press pack secret.txt secret.tppr --recipient age1...
+tpt-press keygen me.key                             # prints tptpub1...
+tpt-press pack secret.txt secret.tppr --recipient tptpub1...
 tpt-press pack secret.txt secret.tppr --recipient-file recipients.txt
 tpt-press unpack secret.tppr secret.txt --identity me.key
 ```
@@ -106,7 +106,7 @@ Keep the identity file private. Anyone who has it can open every archive sent to
 its public key. A passphrase and a recipient cannot be combined.
 
 Generic and logs archives can be encrypted. Encrypted archives are recognised by
-their age header, and the commands then ask for the passphrase, or take
+their magic header, and the commands then ask for the passphrase, or take
 `--identity`, before they read. Logs archives are decrypted into memory and never
 written to disk as plaintext. Tensor, asset, genomics and array archives are not
 encrypted by the CLI yet.

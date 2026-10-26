@@ -11,8 +11,6 @@ use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Read, Seek, SeekFrom,
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use age::secrecy::ExposeSecret;
-use age::x25519;
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::str::FromStr;
@@ -23,6 +21,7 @@ use tpt_press_core::codec::{DEFAULT_LEVEL, MAX_LEVEL, MIN_LEVEL};
 use tpt_press_core::ArchiveFormat;
 use tpt_press_core::Chunking;
 use tpt_press_core::{
+    keys::{Identity, Recipient},
     open_archive, open_with_identities, pack_encrypted, pack_for_recipients, Error as CoreError,
 };
 use tpt_press_datasets as datasets;
@@ -73,7 +72,7 @@ enum Command {
         /// ignored. Implies --encrypt.
         #[arg(long, value_name = "FILE")]
         passphrase_file: Option<PathBuf>,
-        /// Encrypt to this age public key (`age1...`). Repeat for more recipients.
+        /// Encrypt to this public key (`tptpub1...`). Repeat for more recipients.
         /// Any of them can open the archive with its identity. Cannot be combined
         /// with a passphrase.
         #[arg(
@@ -91,7 +90,7 @@ enum Command {
         )]
         recipient_file: Option<PathBuf>,
     },
-    /// Create an age identity file, and print its public key to give to senders.
+    /// Create an identity file, and print its public key to give to senders.
     Keygen {
         /// Identity file to write. Keep it private: it can open any archive
         /// encrypted to its public key.
@@ -106,7 +105,7 @@ enum Command {
         /// Passphrase file for an encrypted archive. Prompts if omitted.
         #[arg(long, value_name = "FILE", conflicts_with = "identity")]
         passphrase_file: Option<PathBuf>,
-        /// age identity file for an archive encrypted to public keys.
+        /// identity file for an archive encrypted to public keys.
         #[arg(long, value_name = "FILE")]
         identity: Option<PathBuf>,
         /// Refuse to write more than this many bytes. Use it for archives from
@@ -130,7 +129,7 @@ enum Command {
         /// Passphrase file for an encrypted archive. Prompts if omitted.
         #[arg(long, value_name = "FILE", conflicts_with = "identity")]
         passphrase_file: Option<PathBuf>,
-        /// age identity file for an archive encrypted to public keys.
+        /// identity file for an archive encrypted to public keys.
         #[arg(long, value_name = "FILE")]
         identity: Option<PathBuf>,
     },
@@ -168,7 +167,7 @@ enum Command {
             conflicts_with = "recipient_file"
         )]
         passphrase_file: Option<PathBuf>,
-        /// Encrypt to this age public key (`age1...`). Repeat for more recipients.
+        /// Encrypt to this public key (`tptpub1...`). Repeat for more recipients.
         #[arg(
             long,
             value_name = "KEY",
@@ -306,7 +305,7 @@ enum Command {
         /// Encrypted logs archives: passphrase file. Prompts if omitted.
         #[arg(long, value_name = "FILE", conflicts_with = "identity")]
         passphrase_file: Option<PathBuf>,
-        /// Encrypted logs archives: age identity file.
+        /// Encrypted logs archives: identity file.
         #[arg(long, value_name = "FILE")]
         identity: Option<PathBuf>,
     },
@@ -621,7 +620,7 @@ fn encryption_choice(
 }
 
 /// The passphrase, or the recipient keys, that an encryption choice resolves to.
-type ResolvedKeys = (Option<String>, Option<Vec<x25519::Recipient>>);
+type ResolvedKeys = (Option<String>, Option<Vec<Recipient>>);
 
 /// Reads any passphrase file or recipient keys. Done before an output file is
 /// created, so a bad key leaves nothing behind.
@@ -858,7 +857,7 @@ fn write_logs<R: BufRead + Seek>(
     reader: R,
     opts: &logs::PackOptions,
     passphrase: Option<&str>,
-    recipients: Option<&[x25519::Recipient]>,
+    recipients: Option<&[Recipient]>,
 ) -> Result<logs::Stats, Box<dyn Error>> {
     let run = || -> Result<logs::Stats, Box<dyn Error>> {
         let file = BufWriter::new(create(output)?);
@@ -1414,7 +1413,7 @@ fn peek_kind(mut reader: Box<dyn Read>) -> io::Result<Peeked> {
     Ok(Peeked::Other(Box::new(Cursor::new(head).chain(reader))))
 }
 
-/// Whether the file at `path` is an age stream, which hides its archive type.
+/// Whether the file at `path` is an encrypted archive, which hides its archive type.
 fn file_is_encrypted(path: &Path) -> Result<bool, Box<dyn Error>> {
     let mut head = Vec::new();
     open_file(path, "reading")?
@@ -1442,7 +1441,7 @@ fn decrypt_logs(path: &Path, creds: Credentials) -> Result<Vec<u8>, Box<dyn Erro
 enum ArchiveKind {
     /// Core archive from `pack`. Also the fallback for anything unrecognised,
     /// which then fails with a parse error. Encrypted archives land here too,
-    /// since they start with age's magic.
+    /// since they start with the encryption magic.
     Generic,
     /// Logs archive from `pack-logs`. Never encrypted.
     Logs,
@@ -1952,7 +1951,7 @@ fn open_archive_file(
 /// Writes a new identity file and returns its public key. Refuses to overwrite
 /// an existing file, since that would destroy a key.
 fn keygen(output: &Path) -> Result<String, Box<dyn Error>> {
-    let identity = x25519::Identity::generate();
+    let identity = Identity::generate();
     let public = identity.to_public();
 
     let mut options = File::options();
@@ -1967,7 +1966,7 @@ fn keygen(output: &Path) -> Result<String, Box<dyn Error>> {
         .map_err(|e| format!("cannot create {}: {e}", output.display()))?;
     writeln!(file, "# created by tpt-press")?;
     writeln!(file, "# public key: {public}")?;
-    writeln!(file, "{}", identity.to_string().expose_secret())?;
+    writeln!(file, "{identity}")?;
     Ok(format!(
         "wrote identity to {}\npublic key: {public}",
         output.display()
@@ -1976,13 +1975,12 @@ fn keygen(output: &Path) -> Result<String, Box<dyn Error>> {
 
 /// Reads the identities in an identity file, one per line. Blank lines and
 /// lines starting with `#` are skipped.
-fn read_identities(path: &Path) -> Result<Vec<x25519::Identity>, Box<dyn Error>> {
+fn read_identities(path: &Path) -> Result<Vec<Identity>, Box<dyn Error>> {
     let text = fs::read_to_string(path)
         .map_err(|e| format!("cannot read identity file {}: {e}", path.display()))?;
     let identities = key_lines(&text)
         .map(|line| {
-            x25519::Identity::from_str(line)
-                .map_err(|e| format!("bad identity in {}: {e}", path.display()))
+            Identity::from_str(line).map_err(|e| format!("bad identity in {}: {e}", path.display()))
         })
         .collect::<Result<Vec<_>, _>>()?;
     if identities.is_empty() {
@@ -1992,10 +1990,7 @@ fn read_identities(path: &Path) -> Result<Vec<x25519::Identity>, Box<dyn Error>>
 }
 
 /// The public keys given on the command line, plus those in `file`.
-fn read_recipients(
-    keys: &[String],
-    file: Option<&Path>,
-) -> Result<Vec<x25519::Recipient>, Box<dyn Error>> {
+fn read_recipients(keys: &[String], file: Option<&Path>) -> Result<Vec<Recipient>, Box<dyn Error>> {
     let mut recipients = Vec::new();
     let from_file = match file {
         Some(file) => fs::read_to_string(file)
@@ -2003,8 +1998,8 @@ fn read_recipients(
         None => String::new(),
     };
     for key in keys.iter().map(String::as_str).chain(key_lines(&from_file)) {
-        let recipient = x25519::Recipient::from_str(key)
-            .map_err(|e| format!("bad recipient key `{key}`: {e}"))?;
+        let recipient =
+            Recipient::from_str(key).map_err(|e| format!("bad recipient key `{key}`: {e}"))?;
         recipients.push(recipient);
     }
     if recipients.is_empty() {
@@ -2031,8 +2026,12 @@ fn read_passphrase_file(path: &Path) -> Result<String, Box<dyn Error>> {
 }
 
 fn prompt(message: &str) -> Result<String, Box<dyn Error>> {
-    let passphrase =
-        rpassword::prompt_password(message).map_err(|e| format!("cannot read passphrase: {e}"))?;
+    let term = console::Term::stderr();
+    term.write_str(message)
+        .map_err(|e| format!("cannot read passphrase: {e}"))?;
+    let passphrase = term
+        .read_secure_line()
+        .map_err(|e| format!("cannot read passphrase: {e}"))?;
     if passphrase.is_empty() {
         return Err("passphrase must not be empty".into());
     }

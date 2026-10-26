@@ -11,7 +11,6 @@ use tpt_strata::sql::SqlContext;
 use tpt_strata::{Column, Scalar, Table};
 
 use crate::error::{Error, Result};
-use crate::format::Format;
 use crate::reader::{scan, Query};
 
 /// The name a query uses in its `FROM` clause.

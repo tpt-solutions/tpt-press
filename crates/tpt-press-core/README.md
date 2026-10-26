@@ -35,7 +35,7 @@ cannot see.
 | Archive | `pack`, `unpack`, `archive::inspect`, `PackOptions`, `UnpackOptions`, `Stats`, `Inspection` | Compress a stream into a `TPPR` archive and back |
 | Chunking | `Chunking::{Fixed, ContentDefined}`, `Pressable`, `compress_chunks`, `decompress_chunks` | Split input into chunks, and compress them in parallel |
 | Codec | `codec::compress`, `codec::decompress`, `codec::train_dictionary` | Thin wrappers over zstd, with level checks |
-| Encryption | `crypto::pack_encrypted`, `crypto::pack_for_recipients`, `crypto::open`, `crypto::open_with_identities`, `EncryptingWriter` | age encryption by passphrase or to X25519 keys |
+| Encryption | `crypto::pack_encrypted`, `crypto::pack_for_recipients`, `crypto::open`, `crypto::open_with_identities`, `EncryptingWriter` | Encryption by passphrase or to X25519 keys |
 | Format trait | `ArchiveFormat`, `GenericArchive` | Lets the CLI recognise each archive type from its magic bytes |
 | Errors | `Error`, `Result` | One error type for the whole family |
 
@@ -122,11 +122,11 @@ one input. Measure on your own data before choosing.
 
 ## Encryption
 
-Two modes, both using [age](https://age-encryption.org/):
+Two modes, both using ChaCha20-Poly1305 in 64 KiB chunks, with RustCrypto primitives:
 
 - **Passphrase.** `crypto::pack_encrypted(input, output, &opts, passphrase)`.
-  Opening needs the passphrase. The scrypt work factor is capped, so a hostile
-  header cannot force gigabytes of allocation.
+  Opening needs the passphrase. Argon2id runs with a capped memory cost, so a
+  hostile header cannot force gigabytes of allocation.
 - **Recipients.** `crypto::pack_for_recipients(input, output, &opts, &[recipient])`.
   Anyone holding a matching X25519 identity can open the archive. No secret is
   shared with senders.
@@ -196,7 +196,8 @@ cargo run -p tpt-press-core --example options_tour --release
 | `archive_format` | The `ArchiveFormat` trait and `GenericArchive` marker |
 | `chunker` | `Pressable`, `compress_chunks`, `decompress_chunks` |
 | `codec` | zstd wrappers, levels and dictionaries |
-| `crypto` | age passphrase and recipient encryption, and `open` |
+| `crypto` | Passphrase and recipient encryption, and `open` |
+| `keys` | X25519 `Recipient` and `Identity`, as bech32m strings |
 | `split` | `Chunking` and the content-defined chunk limits |
 | `error` | `Error` and `Result` |
 

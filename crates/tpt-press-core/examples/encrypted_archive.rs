@@ -5,6 +5,7 @@
 
 use std::io::{BufReader, Cursor};
 
+use tpt_press_core::keys::Identity;
 use tpt_press_core::{archive, crypto, Error, PackOptions, UnpackOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,8 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_bytes();
     let opts = PackOptions::default();
 
-    // 1. Passphrase. The archive is wrapped in an age stream, so the file starts
-    //    with age's magic and can be recognised without the passphrase.
+    // 1. Passphrase. The archive is wrapped in an encrypted stream, so the file starts
+    //    with the encryption magic and can be recognised without the passphrase.
     let mut sealed = Vec::new();
     crypto::pack_encrypted(Cursor::new(&data), &mut sealed, &opts, "correct horse")?;
     println!(
@@ -41,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Public-key recipients. Anyone with the matching identity can open the
     //    archive, and no passphrase needs to be shared.
-    let identity = age::x25519::Identity::generate();
+    let identity = Identity::generate();
     let recipient = identity.to_public();
     let mut sealed = Vec::new();
     crypto::pack_for_recipients(

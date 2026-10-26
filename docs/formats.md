@@ -19,25 +19,46 @@ which are the reference if the two ever disagree.
 ## Passphrase encryption
 
 Any archive written with `--encrypt` or `--passphrase-file` is wrapped in an
-[age](https://age-encryption.org/) stream. age uses passphrase recipients, and
-encrypts in 64 KiB authenticated chunks. The encrypted file starts with age's
-magic, `age-encryption.org/v1`, so it is detected without the passphrase. The
-decryption work factor is capped at 20 (about 1 GiB of scrypt memory) to refuse
+encrypted stream. The stream is split into 64 KiB ChaCha20-Poly1305 chunks, so
+each chunk is authenticated and the last one is marked as final. A truncated or
+altered file fails rather than reading as complete. The file starts with the
+magic `tpt-enc/v1`, so it is detected without the passphrase. The passphrase
+derives a key with Argon2id (64 MiB, 3 passes, 4 lanes for new archives). The
+decryption cost is capped at 1 GiB of memory, 10 passes and 16 lanes, to refuse
 hostile headers.
+
+The full layout, with integers big-endian, is:
+
+```text
+magic     "tpt-enc/v1\n"                      11 bytes
+count     number of key entries, 1 to 255     1 byte
+entries   count of:
+            passphrase: 0x01, salt[16], memory_kib u32, time u32, lanes u32, wrapped[48]
+            recipient:  0x02, ephemeral_public[32], wrapped[48]
+nonce     random payload prefix               7 bytes
+payload   the archive in 64 KiB chunks (STREAM, BE32)
+```
+
+`wrapped` is a random 32-byte file key, sealed with ChaCha20-Poly1305 under a
+key from Argon2id (passphrase) or from X25519 with HKDF-SHA256 (recipient). Its
+nonce is all zeros, which is safe because each wrapping key is used once.
 
 Logs archives can be encrypted the same way: `pack-logs` takes `--encrypt`,
 `--passphrase-file`, `--recipient` or `--recipient-file`. The encryption is
 applied as the archive is written, so no plaintext copy is made. An encrypted logs
-archive is recognised by its age magic, so `query` and `inspect` decrypt it into
+archive is recognised by its magic, so `query` and `inspect` decrypt it into
 memory first, since a query must seek. Memory use is then about the size of the
 archive. Decrypted data is never written to disk.
 
-`pack --recipient KEY` (or `--recipient-file`) encrypts to age X25519 public keys
+`pack --recipient KEY` (or `--recipient-file`) encrypts to X25519 public keys
 instead. Any one of the recipients' identities opens the archive, and no
-passphrase is needed. The file is the same age format, with X25519 stanzas in
-place of the scrypt one, so the magic is the same. A passphrase cannot open a
-key-encrypted archive, and the reverse also holds. `keygen` writes an identity
-file, and refuses to overwrite one.
+passphrase is needed. Keys are bech32m strings: public keys start `tptpub1`, and
+identities start `TPTSEC1`. A mistyped key fails its checksum rather than being
+used. A passphrase cannot open a key-encrypted archive, and the reverse also
+holds. `keygen` writes an identity file, and refuses to overwrite one.
+
+Archives from before this format, which used the `age` format, cannot be read by
+this version. The project was pre-release, and no such archives were kept.
 
 ## Generic archive (`TPPR`, version 1)
 

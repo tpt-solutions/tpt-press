@@ -1,7 +1,7 @@
 //! End-to-end tests for encrypted archives, using `--passphrase-file`.
 //!
 //! Prompting is not tested here. It needs a real terminal, and on Windows
-//! `rpassword` reads the console directly, which could hang a test run.
+//! `console` reads the terminal directly, which could hang a test run.
 
 use std::fs;
 use std::path::{Path, PathBuf};

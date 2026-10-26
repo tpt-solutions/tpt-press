@@ -8,6 +8,12 @@ archive formats may change between any two versions.
 
 ### Changed
 
+- Encryption no longer uses the `age` crate, which pulled in `crypto-bigint` 0.5
+  (RUSTSEC-2026-0387) and an unmaintained `basic-toml`. The format is now
+  `tpt-enc/v1`, built on RustCrypto (Argon2id, ChaCha20-Poly1305 in 64 KiB
+  chunks, X25519 with HKDF-SHA256). Keys are `tptpub1...` and `TPTSEC1...`. Archives
+  encrypted with the previous `age` format cannot be read by this version.
+
 - Crate directories are named after their packages: `crates/tpt-press-core`,
   `crates/tpt-press-assets`, and so on. Package names were already prefixed.
 - Each published crate has its own `README.md` and `CHANGELOG.md`, and

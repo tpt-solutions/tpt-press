@@ -38,10 +38,10 @@ fn keygen_writes_an_identity_and_refuses_to_overwrite_it() {
     let dir = TempDir::new().unwrap();
     let identity = dir.path().join("me.key");
     let public = keygen(&identity);
-    assert!(public.starts_with("age1"), "{public}");
+    assert!(public.starts_with("tptpub1"), "{public}");
 
     let text = fs::read_to_string(&identity).unwrap();
-    assert!(text.contains("AGE-SECRET-KEY-1"));
+    assert!(text.contains("TPTSEC1"));
 
     let again = run(&["keygen", path_str(&identity)]);
     assert!(!again.status.success());
@@ -146,7 +146,7 @@ fn bad_keys_and_conflicting_flags_are_rejected() {
         path_str(&input),
         path_str(&archive),
         "--recipient",
-        "age1nonsense",
+        "tptpub1nonsense",
     ]);
     assert!(!bad.status.success());
     assert!(stderr(&bad).contains("bad recipient key"));
@@ -158,7 +158,7 @@ fn bad_keys_and_conflicting_flags_are_rejected() {
         path_str(&archive),
         "--encrypt",
         "--recipient",
-        "age1nonsense",
+        "tptpub1nonsense",
     ]);
     assert!(!conflict.status.success());
     assert!(stderr(&conflict).contains("cannot be used with"));

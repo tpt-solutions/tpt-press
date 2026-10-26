@@ -9,7 +9,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-keywords = ["compression", "archive", "zstd", "age", "cli"]
+keywords = ["compression", "archive", "zstd", "encryption", "cli"]
 categories = ["command-line-utilities", "compression"]
 
 [lints]
@@ -29,8 +29,7 @@ tpt-press-arrays = { path = "../tpt-press-arrays", version = "0.1.0" }
 tpt-press-datasets = { path = "../tpt-press-datasets", version = "0.1.0" }
 clap = { version = "4.6.7", features = ["derive"] }
 indicatif = "0.18.6"
-rpassword = "7.5.4"
-age = "0.12.1"
+console = "0.16.6"
 # Only for `query --sql`. See tpt-press-logs for why this comes from git.
 tpt-strata = { version = "1.0.1", git = "https://github.com/tpt-solutions/tpt-strata", rev = "0439970ca3fd371be2d2696f308445cf5987ca4f", optional = true }
 
@@ -40,6 +39,6 @@ strata = ["tpt-press-logs/strata", "dep:tpt-strata"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
-zip = { version = "9.1.1", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Reference compressor for `examples/compare_formats.rs`.
 zstd = "0.14.2"

@@ -62,7 +62,7 @@ fn passphrase_encrypted_logs_inspect_and_query() {
 
     // The archive is not readable without the passphrase.
     let bytes = fs::read(&archive).unwrap();
-    assert!(bytes.starts_with(b"age-encryption.org/v1"));
+    assert!(bytes.starts_with(b"tpt-enc/v1\n"));
 
     let inspected = run(&[
         "inspect",
@@ -174,7 +174,7 @@ fn a_failed_encrypted_pack_leaves_no_archive() {
         path_str(&input),
         path_str(&archive),
         "--recipient",
-        "age1nonsense",
+        "tptpub1nonsense",
     ]);
     assert!(!out.status.success());
     assert!(!archive.exists());

@@ -16,10 +16,17 @@ categories = ["compression", "encoding"]
 workspace = true
 
 [dependencies]
-age = "0.12.1"
+argon2 = "0.5"
+bech32 = "0.11"
+chacha20poly1305 = { version = "0.10", features = ["stream"] }
 crc32fast = "1.5.2"
+hkdf = "0.12"
+rand_core = { version = "0.6", features = ["getrandom"] }
 rayon = "1.12.0"
+sha2 = "0.10"
 thiserror = "2.0.21"
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
+zeroize = "1.9.1"
 zstd = "0.14.2"
 
 [dev-dependencies]

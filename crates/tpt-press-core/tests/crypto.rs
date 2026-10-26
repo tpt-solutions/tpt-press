@@ -1,10 +1,11 @@
 //! Integration tests for passphrase-encrypted archives.
 //!
-//! Each encrypt or decrypt runs scrypt, which is slow by design, so these tests
+//! Each encrypt or decrypt runs Argon2, which is slow by design, so these tests
 //! keep the number of operations small.
 
 use std::io::{BufReader, Cursor};
 
+use tpt_press_core::keys::Identity;
 use tpt_press_core::{
     inspect, open_archive, open_with_identities, pack, pack_encrypted, pack_for_recipients, unpack,
     Error, PackOptions, UnpackOptions,
@@ -112,8 +113,6 @@ fn inspect_works_through_decryption() {
 
 #[test]
 fn recipient_keys_open_the_archive_and_nothing_else() {
-    use age::x25519::Identity;
-
     let alice = Identity::generate();
     let bob = Identity::generate();
     let stranger = Identity::generate();
@@ -174,9 +173,70 @@ fn plain_archives_open_with_identities_unchanged() {
     let data = b"not encrypted at all".to_vec();
     let mut archive = Vec::new();
     pack(Cursor::new(&data), &mut archive, &small_chunks()).unwrap();
-    let identity = age::x25519::Identity::generate();
+    let identity = Identity::generate();
     let mut restored = Vec::new();
     let reader = open_with_identities(BufReader::new(Cursor::new(&archive)), &[identity]).unwrap();
     unpack(reader, &mut restored, &UnpackOptions::default()).unwrap();
     assert_eq!(restored, data);
+}
+
+/// Payloads around the 64 KiB chunk size. The last chunk must be sealed as
+/// final, even when the data ends exactly on a chunk boundary.
+#[test]
+fn stream_round_trips_at_chunk_boundaries() {
+    use std::io::{Read, Write};
+    use tpt_press_core::encrypt_for_recipients;
+
+    const CHUNK: usize = 64 * 1024;
+    let identity = Identity::generate();
+    for size in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 2 * CHUNK, 3 * CHUNK + 7] {
+        let data: Vec<u8> = (0..size).map(|i| (i % 253) as u8).collect();
+        let mut sealed = Vec::new();
+        let mut writer = encrypt_for_recipients(&mut sealed, &[identity.to_public()]).unwrap();
+        // Written in uneven pieces, to exercise the chunk buffering.
+        for piece in data.chunks(10_007) {
+            writer.write_all(piece).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut restored = Vec::new();
+        open_with_identities(
+            BufReader::new(Cursor::new(&sealed)),
+            std::slice::from_ref(&identity),
+        )
+        .unwrap()
+        .read_to_end(&mut restored)
+        .unwrap();
+        assert_eq!(restored, data, "size {size}");
+    }
+}
+
+/// Cutting off the final chunk must fail, even when what remains ends on a
+/// full chunk. Without the final marker, the reader would accept it as the end.
+#[test]
+fn truncated_stream_is_refused() {
+    use std::io::{Read, Write};
+    use tpt_press_core::encrypt_for_recipients;
+
+    const CHUNK: usize = 64 * 1024;
+    const TAG: usize = 16;
+    let identity = Identity::generate();
+    let data = vec![7u8; 2 * CHUNK];
+    let mut sealed = Vec::new();
+    let mut writer = encrypt_for_recipients(&mut sealed, &[identity.to_public()]).unwrap();
+    writer.write_all(&data).unwrap();
+    writer.finish().unwrap();
+
+    // Drop the final sealed chunk, which is CHUNK + TAG bytes long.
+    let cut = &sealed[..sealed.len() - (CHUNK + TAG)];
+    let mut restored = Vec::new();
+    let result = open_with_identities(
+        BufReader::new(Cursor::new(cut)),
+        std::slice::from_ref(&identity),
+    )
+    .and_then(|mut reader| reader.read_to_end(&mut restored).map_err(Error::from));
+    assert!(
+        result.is_err(),
+        "a truncated stream must not read as complete"
+    );
 }

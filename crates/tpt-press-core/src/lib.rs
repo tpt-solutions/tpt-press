@@ -28,6 +28,7 @@ pub mod codec;
 pub mod crypto;
 pub mod error;
 mod format;
+pub mod keys;
 pub mod split;
 
 pub use archive::{
