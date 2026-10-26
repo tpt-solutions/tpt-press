@@ -38,7 +38,9 @@ the archive format may change between any two versions.
 - `gorilla` module: delta-of-delta timestamp codec and XOR float codec. They are
   not yet part of the format.
 - Optional `strata` feature: `query_sql` runs SQL over the matching records,
-  through `tpt-strata`, as a table named `logs`.
+  through `tpt-strata` 0.1.0 from crates.io, as a table named `logs`. The engine
+  accepts `OR`, `IN`, `BETWEEN` and `LIKE`, and refuses `CAST`, arithmetic and
+  subqueries.
 - CLI: `pack-logs` (with `--format`, `--timestamp-field`, `--block-size`,
   `--no-dictionary` and encryption options), `query` (with `--from`, `--to`,
   `--columns` and `--sql`), and `inspect` for logs archives.

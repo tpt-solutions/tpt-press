@@ -1308,8 +1308,9 @@ dependencies = [
 
 [[package]]
 name = "tpt-strata"
-version = "1.0.1"
-source = "git+https://github.com/tpt-solutions/tpt-strata?rev=0439970ca3fd371be2d2696f308445cf5987ca4f#0439970ca3fd371be2d2696f308445cf5987ca4f"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b5003e81aed3f5d43924c7a4f5b33914e3362e6416b7c31aef098e657796961"
 
 [[package]]
 name = "typed-path"

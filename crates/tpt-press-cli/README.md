@@ -9,8 +9,7 @@ one record from a genome, or slice one tensor out of a model. The libraries are
 the main product. Use them directly when you are writing Rust.
 
 > **Status:** pre-0.1. The command set is stable enough to script, but the
-> archive formats may change before 1.0. Nothing is published to crates.io yet,
-> and the `strata` feature takes a git dependency.
+> archive formats may change before 1.0. Nothing is published to crates.io yet.
 
 ## Contents
 
@@ -211,13 +210,13 @@ tpt-press inspect anything.tppr --verify       # reads and checks every chunk
 
 | Feature | Default | What it adds |
 |---------|---------|--------------|
-| `strata` | off | `query --sql`, through `tpt-strata`, which is a git dependency pinned to a commit |
+| `strata` | off | `query --sql`, through `tpt-strata` 0.1.0 from crates.io |
 
 ```sh
 cargo build --release -p tpt-press-cli --features strata
 ```
 
-`tpt-strata` is not on crates.io yet, so this feature is not in published builds.
+`tpt-strata` is on crates.io, so the feature also works from a published build: `cargo install tpt-press-cli --features strata`.
 
 ## Scripts and benchmark tools
 

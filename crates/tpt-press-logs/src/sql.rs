@@ -26,8 +26,8 @@ pub const TABLE_NAME: &str = "logs";
 /// integer column. A mix of integers and decimals is a decimal column. A
 /// column of `true` and `false` is boolean. Anything else is text, and then
 /// each value keeps its text. CSV fields are typed the same way, so `007`
-/// becomes the integer 7. Timestamps stay as text, since the engine has no
-/// timestamp type. Use `from` and `to` in the [`Query`] for time ranges.
+/// becomes the integer 7. Timestamps stay as text. Use `from` and `to` in the
+/// [`Query`] for time ranges.
 ///
 /// The whole result is held in memory, as with the other logs queries.
 pub fn query_sql<R: Read + Seek>(input: R, query: &Query, sql: &str) -> Result<Table> {

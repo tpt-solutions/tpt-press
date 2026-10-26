@@ -167,12 +167,27 @@ fn sql_errors_are_reported_not_hidden() {
 }
 
 #[test]
-fn unsupported_sql_is_refused_with_a_diagnostic() {
+fn or_and_in_are_supported() {
     let archive = pack_text(&jsonl_levels(), Format::Jsonl);
-    let result = query_sql(
+    let table = query_sql(
         Cursor::new(archive),
         &Query::default(),
-        &format!("SELECT ms FROM {TABLE_NAME} WHERE level = 'info' OR level = 'warn'"),
-    );
-    assert!(result.is_err());
+        &format!("SELECT ms FROM {TABLE_NAME} WHERE level = 'warn' OR ms IN (10)"),
+    )
+    .expect("sql");
+    let mut ms: Vec<f64> = rows(&table).iter().filter_map(|r| r[0].as_f64()).collect();
+    ms.sort_by(f64::total_cmp);
+    assert_eq!(ms, vec![10.0, 20.0, 60.0]);
+}
+
+#[test]
+fn unsupported_sql_is_refused_with_a_diagnostic() {
+    let archive = pack_text(&jsonl_levels(), Format::Jsonl);
+    let err = query_sql(
+        Cursor::new(archive),
+        &Query::default(),
+        &format!("SELECT CAST(ms AS TEXT) FROM {TABLE_NAME}"),
+    )
+    .unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("cast"), "got {err}");
 }

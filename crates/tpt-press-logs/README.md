@@ -10,8 +10,7 @@ streams. A query like "warnings from 10:00 to 10:05, showing timestamp and
 level" touches a small fraction of the archive.
 
 > **Status:** pre-0.1. Format version 3, which may change before 1.0. Nothing is
-> published to crates.io yet, and the optional SQL feature takes a git
-> dependency.
+> published to crates.io yet.
 
 ## Contents
 
@@ -183,9 +182,10 @@ With `--features strata`, `query_sql` runs SQL over the records that match the
 time and column filters. The result is a table named `logs` (`TABLE_NAME`), and
 column types are inferred per column. Columns with no values are left out.
 
-The engine is `tpt-strata`, which is not on crates.io yet, so this feature takes
-it from git, pinned to a commit. The engine has no `OR`, `IN`, `LIKE` or
-timestamp type, and the result is held in memory.
+The engine is `tpt-strata` 0.1.0 from crates.io. It accepts `AND`, `OR`, `IN`,
+`BETWEEN`, `LIKE`, `IS NULL` and the aggregates `SUM`, `COUNT`, `MIN`, `MAX` and
+`AVG`. It refuses `CAST`, arithmetic and subqueries. Timestamps are text, so use
+`from` and `to` for time ranges. The result is held in memory.
 
 ## The archive format
 
