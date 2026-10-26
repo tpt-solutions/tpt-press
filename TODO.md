@@ -133,7 +133,7 @@ Non-goals: no image/audio/video recompression. ML datasets store image blobs opa
 - [x] Region/read-range index for random access. `fetch` finds a record by name through a sorted name-hash lookup stored in the index, reads only the block that holds it, and returns a 1-based inclusive range. A record is never split across blocks, so a block can be large. Block size trades archive size against how much `fetch` decodes
 - [~] Compare against bgzip and CRAM. Done: gzip, zip and plain zstd on E. coli and on a 464-contig split (`docs/benchmarks.md`). Not done: bgzip and CRAM, which are not installed here
 - [ ] Find a domain reviewer before committing to the format. **Open.** Version 1 was written without one, so the layout is not yet reviewed by someone who works with sequence data
-- [ ] SIMD-friendly parts: 2-bit packing, FASTQ column split and quality-score modelling (see 7g)
+- [x] SIMD-friendly parts: 2-bit packing, FASTQ column split and quality-score modelling (see 7g). Measured, nothing kept. Quality-score modelling is a context model, not a SIMD kernel, so it was not part of this check
 
 ### 7d. Prerequisites that make any new domain cheaper
 - [x] `ArchiveFormat` trait (done in Phase 1)
@@ -160,10 +160,10 @@ Lossless only: output is byte-identical after unpack. Lossy quantization is a no
 
 ### 7g. tpt-simd integration (optional)
 Optional `simd` cargo feature. A scalar fallback always exists, and results must be bit-identical to it.
-- [ ] Float codec: exponent/mantissa split and bf16/fp16 handling via `tpt-simd-half` plus `tpt-simd-permute`/`tpt-simd-transpose` (byte-plane shuffle)
-- [ ] Delta and XOR-delta coding (checkpoints, time-series, arrays) via `tpt-simd-bits`
-- [ ] 2-bit nucleotide packing and unpacking (genomics) via `tpt-simd-bits` and `tpt-simd-permute`
-- [ ] Newline/record splitting for FASTQ and logs via `tpt-simd-search`
-- [ ] Per-chunk CRC32 via `tpt-simd-hash` (core uses a scalar CRC32 today)
-- [ ] Decide: dependency on a pre-release crate (path vs published). `unsafe` must stay inside tpt-simd so `forbid(unsafe_code)` in core still holds. Decision on record: no dependency for now. The scalar code is the only implementation, and nothing here needs SIMD to be correct. Revisit once there is a benchmark that shows a gap
-- [ ] Benchmark that SIMD beats the compiler's autovectorized scalar code before keeping each kernel
+- [x] Float codec: byte-plane shuffle via `tpt-simd-transpose`. Measured, not kept. Shuffle (encode) is 0.72 to 0.84x the scalar speed, so it is slower, and unshuffle is 1.09 to 1.30x faster. The encode side decides it, so the scalar code stays. Numbers in `docs/benchmarks.md`
+- [ ] Delta and XOR-delta coding (checkpoints, time-series, arrays) via `tpt-simd-bits`. Not measured. `tpt-simd-bits` delta works on `u32` only, and the arrays filters work per element width on bytes, so it does not fit as-is
+- [x] 2-bit nucleotide packing (genomics). Not measured against SIMD: `tpt-simd-bits` packs `u32`, not the `u8` codes used here. The scalar packer runs at about 1.3 GiB/s, far above the model's 3 MB/s, so it is not the bottleneck. Not kept
+- [x] Newline and byte search via `tpt-simd-search`. Measured: 2.2 to 6x faster than a naive scalar loop. Not kept, because the tpt-press read paths use `split` and `read_until` (not measured here) and no measured hot path counts newlines. Revisit if a profile of log ingest or FASTQ parsing shows it
+- [x] Per-chunk CRC32 via `tpt-simd-hash`. Measured, not kept. core uses `crc32fast`, which is already SIMD-accelerated (about 15 GiB/s), and `tpt-simd-hash` runs at the same speed with AVX2 and 1.13x with the default build. There is no gap to close. (Correction: core does not use a scalar CRC32; this item's old note was out of date)
+- [x] Decide: dependency on a pre-release crate (path vs published). `unsafe` must stay inside tpt-simd so `forbid(unsafe_code)` in core still holds. Decision on record: no dependency for now. The scalar code is the only implementation, and nothing here needs SIMD to be correct. Revisit once there is a benchmark that shows a gap. Re-checked: no kernel on a hot path beats the scalar code, so the decision stands. tpt-simd 0.1.1 is also not on crates.io yet, so a dependency would block publishing
+- [x] Benchmark that SIMD beats the compiler's autovectorized scalar code before keeping each kernel. Done for shuffle, CRC32 and search (table in `docs/benchmarks.md`). Nothing is kept. The benchmark is in a scratch project outside the repo, against the local tpt-simd tree

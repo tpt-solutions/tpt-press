@@ -403,3 +403,23 @@ worse on this data. The values are random, which is the case where a dictionary
 cannot help. The writer's default is unchanged, and a real log may behave
 differently. The shared dictionary also costs 64 KiB per archive. Revisit with
 real logs before changing the default.
+
+## tpt-simd kernels against the scalar code (64 MiB buffer, median of seven, single machine)
+
+Scalar side: the shuffle, unshuffle and genomics 2-bit packing loops copied from tpt-press, and `crc32fast` (what core uses today). SIMD side: `tpt-simd-transpose`, `tpt-simd-hash` and `tpt-simd-search` from the local tpt-simd 0.1.1 tree, built with `runtime-dispatch` where the crate has it. Outputs were checked equal to the scalar results before timing. Ratio is scalar time over SIMD time, so above 1.00x means SIMD is faster. Built with the default target (SSE2 baseline) and with `-C target-cpu=x86-64-v3`.
+
+| Kernel | Default build | x86-64-v3 |
+| --- | --- | --- |
+| shuffle, width 2 | 0.78x | 0.72x |
+| shuffle, width 4 | 0.78x | 0.75x |
+| shuffle, width 8 | 0.84x | 0.80x |
+| unshuffle, width 2 | 1.30x | 1.29x |
+| unshuffle, width 4 | 1.14x | 1.09x |
+| unshuffle, width 8 | 1.28x | 1.14x |
+| CRC32 (`crc32fast` vs `tpt-simd-hash`) | 1.13x | 1.00x |
+| count newlines (vs a `filter` loop) | 5.96x | 2.20x |
+| find first byte, absent (vs `position`) | 5.17x | 5.01x |
+
+Not measured: the 2-bit packer. `tpt-simd-bits` packs `u32` values, not the `u8` codes the genomics writer uses, so there is no like-for-like kernel. The scalar packer runs at about 1.3 GiB/s, which is well above the genomics model's speed of about 3 MB/s, so packing is not the bottleneck.
+
+Reading the table: the shuffle encode is slower under SIMD in both builds. The decode side is 1.1 to 1.3x faster. CRC32 is already SIMD in `crc32fast`, so there is no gap. The newline and byte-search wins are real, but the baseline is a naive loop. The tpt-press read paths call `split` and `read_until`, which were not measured here, and the paths that count newlines are not in any measured hot path.
