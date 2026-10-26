@@ -14,10 +14,12 @@ the archive format may change between any two versions.
   hash. The average chunk size is a power of two from 256 bytes to 16 MiB.
 - Optional zstd dictionary, trained on the start of the input
   (`PackOptions::dictionary`). Stored once in the header, header flag bit 0.
-- Passphrase encryption with age: `crypto::pack_encrypted` and
-  `crypto::open`. The scrypt work factor is capped at 20.
+- Passphrase encryption (`tpt-enc/v1`): `crypto::pack_encrypted` and
+  `crypto::open`. Keys are derived with Argon2id. Decryption refuses work
+  factors above 1 GiB of memory, 10 passes and 16 lanes.
 - Public-key encryption to X25519 recipients: `crypto::pack_for_recipients`
-  and `crypto::open_with_identities`.
+  and `crypto::open_with_identities`. Keys are `keys::Recipient` and
+  `keys::Identity`, as `tptpub1...` and `TPTSEC1...` strings.
 - `EncryptingWriter`, and `encrypt_with_passphrase` and
   `encrypt_for_recipients`, which encrypt while writing. No plaintext copy is
   made.

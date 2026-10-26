@@ -156,7 +156,7 @@ real logs before changing the default.
 ## Encryption
 
 This crate writes plaintext archives. The CLI encrypts a logs archive by
-writing its output through the age encryption in
+writing its output through the `tpt-enc/v1` encryption in
 [`tpt-press-core`](../tpt-press-core/README.md#encryption), and it decrypts into
 memory on read, so no plaintext copy reaches the disk. Do the same in your own
 code: wrap the output with `crypto::encrypt_with_passphrase` or

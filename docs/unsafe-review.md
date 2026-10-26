@@ -15,7 +15,7 @@ Every other crate forbids unsafe code: `core`, `logs` and `tensors` use
 single `#[allow]` above. The CLI inherits the workspace lint `unsafe_code =
 "warn"`, and it contains no `unsafe`.
 
-Dependencies (zstd, age, memmap2, rayon and others) contain their own unsafe
+Dependencies (zstd, memmap2, rayon and others) contain their own unsafe
 code. This review does not cover them. `cargo deny` checks licenses and
 advisories, but not unsafe use.
 

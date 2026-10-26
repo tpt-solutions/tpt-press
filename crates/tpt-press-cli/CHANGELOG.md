@@ -9,7 +9,7 @@ the archive formats may change between any two versions.
 ### Added
 
 - The `tpt-press` binary, with a command for each archive type:
-  - Generic: `pack`, `unpack`, `inspect`, and `keygen` for age identities.
+  - Generic: `pack`, `unpack`, `inspect`, and `keygen` for X25519 identity files.
   - Logs: `pack-logs`, and `query` with `--from`, `--to`, `--columns`, `--output`
     and `--sql`.
   - Tensors: `pack-tensors` (with `--shard-size`), `unpack-tensors`, and

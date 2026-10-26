@@ -6,7 +6,7 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - Crates: `tpt-press-{core,assets,tensors,logs,cli}`
 - On-disk formats: magic bytes + version field, unstable until 1.0
 - `.tpa` uses a fixed little-endian bounds-checked layout (e.g. `zerocopy`); logs/tensors headers use postcard/bincode 2 (not bincode 1.x)
-- Optional `age` encryption in core, passphrase only for now (whole-stream age, no header flag; see Phase 1)
+- Optional encryption in core (`tpt-enc/v1`): passphrase (Argon2id) or X25519 recipients, 64 KiB ChaCha20-Poly1305 chunks, detected by magic; see Phase 1
 - Tensor formats: safetensors, GGUF, ONNX, PyTorch pickle (restricted allowlist parser, never executes)
 - Logs: JSONL + CSV, simple filters; optional `strata` cargo feature (tpt-strata) for `query --sql`
 - CI: Windows/Linux/macOS, stable Rust, MSRV = stable minus ~2
@@ -32,7 +32,7 @@ License: `MIT OR Apache-2.0` · Copyright TPT Solutions · Org: `tpt-solutions`
 - [x] Parallel chunker (rayon): fixed-size chunks, order preserved
 - [x] Parallel chunker: content-defined chunking (`Chunking::ContentDefined`, `pack --content-defined`). Gear rolling hash, as in FastCDC, with boundaries between a quarter and four times the average. Frames are unchanged, so no format bump. An insertion moves only nearby chunks (tested: 90% of chunks survive it, against almost none for fixed chunks)
 - [x] Streaming Read -> parallel compress -> Write, bounded memory (`archive::pack` / `archive::unpack`, batches of 2 chunks per thread). The in-memory `compress_chunks` API still exists
-- [x] Passphrase encryption with `age` 0.12 (`crypto.rs`). Whole archive wrapped in an age stream (age encrypts in 64 KiB authenticated chunks), so the header flag planned earlier is not needed. Encrypted archives are detected by age's magic. Work factor on decrypt is capped at 20 (~1 GiB). Recipient keys: `pack --recipient` and `--recipient-file` encrypt to age X25519 public keys, `unpack` and `inspect` take `--identity`, and `keygen` writes an identity file. A key-encrypted archive cannot be opened with a passphrase, and the reverse holds
+- [x] Passphrase encryption in the `tpt-enc/v1` format (`crypto.rs`, replacing `age`). Whole archive wrapped in 64 KiB ChaCha20-Poly1305 chunks, so the header flag planned earlier is not needed. Encrypted archives are detected by the `tpt-enc/v1` magic. Keys come from Argon2id, and decryption refuses work factors above 1 GiB, 10 passes or 16 lanes. Recipient keys: `pack --recipient` and `--recipient-file` encrypt to X25519 public keys (`tptpub1...`), `unpack` and `inspect` take `--identity` (`TPTSEC1...`), and `keygen` writes an identity file. A key-encrypted archive cannot be opened with a passphrase, and the reverse holds
 - [x] Tampering and wrong passphrase are detected. Wrong passphrase gives "decryption failed"; damage gives "archive is damaged or was altered"
 - [x] Checksums per chunk (CRC32 over compressed payload, verified before decompression)
 - [x] Decompression-bomb guard (per-chunk output cap) and chunk size limits. Archive-wide limit: `UnpackOptions::max_total_size` (`unpack --max-output`), off by default
