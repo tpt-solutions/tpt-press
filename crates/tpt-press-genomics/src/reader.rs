@@ -5,6 +5,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use crate::block;
 use crate::error::{map_io, Error, Result};
 use crate::format::{self, Entry, Kind};
+use crate::vcf;
 
 /// What an archive holds, from its index alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,10 +46,31 @@ pub fn inspect<R: Read + Seek>(mut input: R) -> Result<Summary> {
     })
 }
 
-/// Writes the original FASTA or FASTQ back out, byte for byte.
+/// Writes the original FASTA, FASTQ or VCF back out, byte for byte.
 pub fn unpack<R: Read + Seek, W: Write>(mut input: R, mut output: W) -> Result<Summary> {
     let kind = format::read_header(&mut input)?;
     let index = format::read_index(&mut input)?;
+    if kind == Kind::Vcf {
+        // The first block holds the header lines. Each later block holds data lines.
+        for (i, entry) in index.entries.iter().enumerate() {
+            let payload = read_payload(&mut input, entry)?;
+            let bytes = if i == 0 {
+                vcf::decode_header(&payload)?
+            } else {
+                vcf::decode_block(&payload)?
+            };
+            output.write_all(&bytes)?;
+        }
+        output.flush()?;
+        let archive_bytes = input.seek(SeekFrom::End(0)).map_err(map_io)?;
+        return Ok(Summary {
+            kind,
+            records: index.total_records,
+            bases: index.total_bases,
+            blocks: index.entries.len() as u64,
+            archive_bytes,
+        });
+    }
     for entry in &index.entries {
         let payload = read_payload(&mut input, entry)?;
         let columns = block::decode(&payload, kind)?;
@@ -87,6 +109,11 @@ pub fn fetch<R: Read + Seek, W: Write>(
     mut output: W,
 ) -> Result<FetchStats> {
     let kind = format::read_header(&mut input)?;
+    if kind == Kind::Vcf {
+        return Err(Error::InvalidOption(
+            "fetch works on FASTA and FASTQ archives; unpack a VCF archive instead",
+        ));
+    }
     let index = format::read_index(&mut input)?;
     let wanted = id.as_bytes();
     let hash = format::name_hash(wanted);

@@ -314,11 +314,39 @@ fn modelled_bases_and_qualities_round_trip_at_scale() {
 }
 
 #[test]
-#[cfg(not(feature = "vcf"))]
-fn vcf_input_is_refused_until_the_reader_can_read_it() {
-    let vcf = b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\n1\t10\t.\tA\tG\n";
-    assert!(matches!(
-        pack_bytes(vcf, 40_000),
-        Err(Error::Unsupported { .. })
-    ));
+fn vcf_round_trips_across_blocks_and_line_shapes() {
+    // Header lines, then 10,000 calls: a chromosome change, three line shapes
+    // (8, 9 and 10 columns), and a POS that goes back at the change. Blocks hold
+    // 4,096 records, so this spans three.
+    let mut text = String::from(
+        "##fileformat=VCFv4.2\n##source=test\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n",
+    );
+    let mut pos = 100u64;
+    for i in 0..10_000u64 {
+        let chrom = if i < 6000 { "chr1" } else { "chr2" };
+        if i == 6000 {
+            pos = 50;
+        }
+        pos += 1 + (i * 7) % 13;
+        let line = match i % 3 {
+            0 => format!(
+                "{chrom}\t{pos}\trs{i}\tA\tG\t{}\tPASS\tDP={}\tGT:DP\t0/1:{}\t1|1:{}\n",
+                i % 90,
+                i % 40,
+                i % 40,
+                i % 7
+            ),
+            1 => format!("{chrom}\t{pos}\t.\tC\tT,G\t.\t.\t.\n"),
+            _ => format!("{chrom}\t{pos}\t.\tG\tA\t9\tq10\tAF=0.5\tGT\t.\n"),
+        };
+        text.push_str(&line);
+    }
+    let archive = pack_bytes(text.as_bytes(), 40_000).unwrap();
+    assert_eq!(unpack_bytes(&archive).unwrap(), text.as_bytes());
+}
+
+#[test]
+fn vcf_refuses_a_header_line_after_the_data() {
+    let text = b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t10\t.\tA\tG\t.\t.\t.\n#late\n";
+    assert!(pack_bytes(text, 40_000).is_err());
 }

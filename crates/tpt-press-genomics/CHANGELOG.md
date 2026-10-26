@@ -7,6 +7,10 @@ the archive format may change between any two versions.
 ## [Unreleased]
 
 ### Added
+- VCF input (`pack` on a file starting with `#`). The header lines are kept verbatim,
+  and the data columns are stored as streams. `unpack` rebuilds the file byte for
+  byte. `fetch` is refused on VCF archives. The writer no longer refuses VCF, and
+  the `vcf` feature from an earlier version is gone.
 
 - `TPGN` archive format, version 1 (footer `TPGX`), for FASTA and FASTQ. The
   layout is documented in `docs/formats.md` and at the top of `src/format.rs`.

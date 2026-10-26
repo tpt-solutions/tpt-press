@@ -15,10 +15,6 @@ categories = ["compression", "science"]
 [lints]
 workspace = true
 
-[features]
-# Unfinished VCF support (TODO section 7c). Off by default: the writer refuses VCF
-# input without it, because the reader cannot read VCF archives yet.
-vcf = []
 
 [dependencies]
 crc32fast = "1.5.2"

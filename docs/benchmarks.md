@@ -373,3 +373,16 @@ The split lost, so the writer would never have chosen it. It was removed, not
 kept as a dead format code. The random mantissa dominates the size, and the
 shuffle already keeps the exponent bits together. Real fp16 weights are not
 measured, so this is a result for this synthetic data only.
+
+## VCF (synthetic, single run)
+
+200,000 generated records, 16.2 MB: random chromosome positions, random alleles,
+random sample genotypes over four samples. Random genotypes are close to the
+worst case for a VCF, so real files should do better.
+
+- gzip -9: 3,736,325 bytes
+- tpt-press genomics (VCF): 2,697,671 bytes (28% smaller than gzip -9)
+- The round trip is byte-identical (`cmp`).
+
+Small files grow. A two-record file takes 632 bytes, because each block has a
+fixed cost.
