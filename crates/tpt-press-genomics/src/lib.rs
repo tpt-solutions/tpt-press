@@ -21,6 +21,7 @@ mod entropy;
 mod error;
 mod format;
 mod reader;
+#[cfg(feature = "vcf")]
 mod vcf;
 mod writer;
 

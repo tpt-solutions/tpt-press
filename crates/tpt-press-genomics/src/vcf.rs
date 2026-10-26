@@ -137,7 +137,9 @@ fn text_lines(stream: &[u8], records: usize) -> Result<Vec<&[u8]>> {
         .ok_or(Error::Corrupt("VCF text stream is not newline-terminated"))?;
     let lines: Vec<&[u8]> = body.split(|&b| b == b'\n').collect();
     if lines.len() != records {
-        return Err(Error::Corrupt("VCF text stream does not match the record count"));
+        return Err(Error::Corrupt(
+            "VCF text stream does not match the record count",
+        ));
     }
     Ok(lines)
 }
@@ -145,7 +147,8 @@ fn text_lines(stream: &[u8], records: usize) -> Result<Vec<&[u8]>> {
 /// Rebuilds the data lines of one block, each with its newline.
 pub(crate) fn decode_block(payload: &[u8]) -> Result<Vec<u8>> {
     let mut b = Bytes::new(payload);
-    let records = usize::try_from(b.u64()?).map_err(|_| Error::Corrupt("record count is too large"))?;
+    let records =
+        usize::try_from(b.u64()?).map_err(|_| Error::Corrupt("record count is too large"))?;
     let _ = (b.u64()?, b.u64()?);
     let ncols_raw = take_stream(&mut b)?;
     let pos_raw = take_stream(&mut b)?;
@@ -319,7 +322,10 @@ fn flush<W: Write>(
     let payload = encode_block(cols, level)?;
     output.write_all(&payload)?;
     let len = payload.len() as u64;
-    let first_record = index.entries.last().map_or(0, |e| e.first_record + e.records);
+    let first_record = index
+        .entries
+        .last()
+        .map_or(0, |e| e.first_record + e.records);
     index.entries.push(Entry {
         offset,
         len,
@@ -346,7 +352,17 @@ mod tests {
 
     #[test]
     fn zigzag_round_trips() {
-        for v in [0i64, 1, -1, 2, -2, 1_000_000, -1_000_000, i64::MAX, i64::MIN] {
+        for v in [
+            0i64,
+            1,
+            -1,
+            2,
+            -2,
+            1_000_000,
+            -1_000_000,
+            i64::MAX,
+            i64::MIN,
+        ] {
             assert_eq!(unzigzag(zigzag(v)), v);
         }
     }
@@ -357,7 +373,11 @@ mod tests {
                      chr1\t90\t.\tC\tT\t.\t.\t.\tGT\t0/0\t0/0\n\
                      chr2\t7\t.\tG\tA,C\t9\tq10\tAF=0.5\tGT\t.\t1|0\n";
         let mut cols = Columns::default();
-        for (i, line) in text.split(|&b| b == b'\n').filter(|l| !l.is_empty()).enumerate() {
+        for (i, line) in text
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .enumerate()
+        {
             push_line(&mut cols, line, i as u64 + 1).unwrap();
         }
         let payload = encode_block(&cols, 3).unwrap();

@@ -69,7 +69,15 @@ pub fn pack<R: BufRead, W: Write>(
     let kind = match input.fill_buf()?.first() {
         Some(b'>') => Kind::Fasta,
         Some(b'@') => Kind::Fastq,
-        Some(b'#') => return crate::vcf::pack(input, output, options.level),
+        Some(b'#') => {
+            #[cfg(feature = "vcf")]
+            return crate::vcf::pack(input, output, options.level);
+            #[cfg(not(feature = "vcf"))]
+            return Err(Error::Unsupported {
+                line: 1,
+                message: "VCF input is not supported yet; the reader cannot read VCF archives",
+            });
+        }
         Some(_) => {
             return Err(Error::Format {
                 line: 1,

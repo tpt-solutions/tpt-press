@@ -312,3 +312,13 @@ fn modelled_bases_and_qualities_round_trip_at_scale() {
     let archive = pack_bytes(&text, 40_000).unwrap();
     assert_eq!(unpack_bytes(&archive).unwrap(), text);
 }
+
+#[test]
+#[cfg(not(feature = "vcf"))]
+fn vcf_input_is_refused_until_the_reader_can_read_it() {
+    let vcf = b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\n1\t10\t.\tA\tG\n";
+    assert!(matches!(
+        pack_bytes(vcf, 40_000),
+        Err(Error::Unsupported { .. })
+    ));
+}
