@@ -1,6 +1,6 @@
 # tpt-press-core
 
-The shared foundation of [tpt-press](../../README.md). It provides the generic
+The shared foundation of [tpt-press](https://github.com/tpt-solutions/tpt-press/blob/master/README.md). It provides the generic
 archive format, parallel chunking, zstd and dictionary helpers, passphrase and
 public-key encryption, and the error types that every other tpt-press crate
 uses.
@@ -96,7 +96,7 @@ chunk.
 | Dictionary | optional, flag bit 0 in the header |
 
 The byte layout is in [`src/format.rs`](src/format.rs), and summarised in
-[`docs/formats.md`](../../docs/formats.md#generic-archive-tppr-version-1).
+[`docs/formats.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/formats.md#generic-archive-tppr-version-1).
 
 ## Options
 
@@ -170,7 +170,7 @@ checked before it is used:
 
 The crate has property tests, hostile-input tests, and CLI-level tests that
 check corrupt and truncated archives leave no output. Fuzz targets for the
-readers live in [`fuzz/`](../../fuzz/) at the workspace root.
+readers live in [`fuzz/`](https://github.com/tpt-solutions/tpt-press/tree/master/fuzz/) at the workspace root.
 
 ## Examples
 
@@ -203,5 +203,5 @@ cargo run -p tpt-press-core --example options_tour --release
 
 ## License
 
-Licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
-[MIT license](../../LICENSE-MIT), at your option.
+Licensed under either of [Apache License 2.0](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-APACHE) or
+[MIT license](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-MIT), at your option.

@@ -1,6 +1,6 @@
 # tpt-press-cli
 
-The `tpt-press` command-line tool, for [tpt-press](../../README.md). It is a thin
+The `tpt-press` command-line tool, for [tpt-press](https://github.com/tpt-solutions/tpt-press/blob/master/README.md). It is a thin
 front end over the library crates: each command calls one of them, and writes
 the result to a file or to standard output.
 
@@ -233,7 +233,7 @@ pwsh crates/tpt-press-cli/examples/workflow.ps1      # Windows, or PowerShell on
 bash crates/tpt-press-cli/examples/workflow.sh       # Linux and macOS
 ```
 
-**Benchmark tools.** These are used for [`docs/benchmarks.md`](../../docs/benchmarks.md).
+**Benchmark tools.** These are used for [`docs/benchmarks.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/benchmarks.md).
 
 ```sh
 cargo run -p tpt-press-cli --release --example make_logs_corpus -- corpus.jsonl 400000
@@ -245,5 +245,5 @@ cargo run -p tpt-press-cli --release --example compare_formats -- corpus.jsonl
 
 ## License
 
-Licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
-[MIT license](../../LICENSE-MIT), at your option.
+Licensed under either of [Apache License 2.0](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-APACHE) or
+[MIT license](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-MIT), at your option.

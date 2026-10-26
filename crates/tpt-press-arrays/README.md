@@ -1,7 +1,7 @@
 # tpt-press-arrays
 
 Lossless chunked storage for n-dimensional numeric arrays, for
-[tpt-press](../../README.md). An array is split into chunks, and each chunk is
+[tpt-press](https://github.com/tpt-solutions/tpt-press/blob/master/README.md). An array is split into chunks, and each chunk is
 filtered, then compressed. The `.npy` header is kept, so unpacking a NumPy file
 gives back the same file, byte for byte. A rectangular slice can be read
 without decoding the rest of the array.
@@ -146,11 +146,11 @@ input.
 | Index | Offset, length, CRC32 and filter for each chunk |
 
 The layout is documented at the top of [`src/format.rs`](src/format.rs), and in
-full in [`docs/formats.md`](../../docs/formats.md#arrays-archive-tpar-version-1).
+full in [`docs/formats.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/formats.md#arrays-archive-tpar-version-1).
 
 ## Results
 
-From [`docs/benchmarks.md`](../../docs/benchmarks.md). **These are synthetic
+From [`docs/benchmarks.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/benchmarks.md). **These are synthetic
 inputs.** A smooth analytic field is a best case, so real data will compress
 far less.
 
@@ -197,5 +197,5 @@ cargo run -p tpt-press-arrays --example read_slice --release
 
 ## License
 
-Licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
-[MIT license](../../LICENSE-MIT), at your option.
+Licensed under either of [Apache License 2.0](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-APACHE) or
+[MIT license](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-MIT), at your option.

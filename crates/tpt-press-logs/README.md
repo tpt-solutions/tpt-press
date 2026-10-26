@@ -1,6 +1,6 @@
 # tpt-press-logs
 
-Archives for JSON Lines and CSV logs, for [tpt-press](../../README.md). Records
+Archives for JSON Lines and CSV logs, for [tpt-press](https://github.com/tpt-solutions/tpt-press/blob/master/README.md). Records
 are grouped into time-stamped blocks, and each column is stored and compressed
 separately. A query for a time window reads only the blocks that overlap it,
 and inside those blocks it decompresses only the columns it asks for.
@@ -142,7 +142,7 @@ compress each block on its own.
 **Measure it on your data before you rely on it.** The results so far are
 mixed:
 
-- On the 57.7 MB logs corpus in [`docs/benchmarks.md`](../../docs/benchmarks.md),
+- On the 57.7 MB logs corpus in [`docs/benchmarks.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/benchmarks.md),
   the dictionary made the archive 7.7% larger, and the pack slower. Turning it
   off is the better choice for that corpus.
 - On a synthetic JSON Lines input with a regular structure, the dictionary made
@@ -157,7 +157,7 @@ real logs before changing the default.
 
 This crate writes plaintext archives. The CLI encrypts a logs archive by
 writing its output through the `tpt-enc/v1` encryption in
-[`tpt-press-core`](../tpt-press-core/README.md#encryption), and it decrypts into
+[`tpt-press-core`](https://github.com/tpt-solutions/tpt-press/blob/master/crates/tpt-press-core/README.md#encryption), and it decrypts into
 memory on read, so no plaintext copy reaches the disk. Do the same in your own
 code: wrap the output with `crypto::encrypt_with_passphrase` or
 `crypto::encrypt_for_recipients`, and read with `crypto::open`.
@@ -170,7 +170,7 @@ The `gorilla` module has two codecs for numeric series:
   interval costs about one bit per point.
 - `encode_floats` and `decode_floats`: the Gorilla XOR codec.
 
-They are measured in [`docs/benchmarks.md`](../../docs/benchmarks.md) against
+They are measured in [`docs/benchmarks.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/benchmarks.md) against
 zstd and shuffle-plus-zstd. Delta-of-delta wins on regular timestamps. The XOR
 codec loses badly on quantised readings, where zstd finds repeats it misses. So
 the codecs are not used by the format, and the example
@@ -200,11 +200,11 @@ The engine is `tpt-strata` 0.1.0 from crates.io. It accepts `AND`, `OR`, `IN`,
 
 The layout is documented at the top of [`src/format.rs`](src/format.rs), and
 block layout is in [`src/block.rs`](src/block.rs). A summary is in
-[`docs/formats.md`](../../docs/formats.md#logs-archive-tplg-version-2).
+[`docs/formats.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/formats.md#logs-archive-tplg-version-3).
 
 ## Results
 
-From [`docs/benchmarks.md`](../../docs/benchmarks.md), on a 57.7 MB corpus of
+From [`docs/benchmarks.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/benchmarks.md), on a 57.7 MB corpus of
 400,000 generated JSON lines, single runs on Windows 11:
 
 | Tool | Size | Ratio |
@@ -245,5 +245,5 @@ cargo run -p tpt-press-logs --example query_time_range
 
 ## License
 
-Licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
-[MIT license](../../LICENSE-MIT), at your option.
+Licensed under either of [Apache License 2.0](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-APACHE) or
+[MIT license](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-MIT), at your option.

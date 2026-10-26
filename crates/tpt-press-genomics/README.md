@@ -1,7 +1,7 @@
 # tpt-press-genomics
 
 Lossless archives for FASTA and FASTQ sequence files, for
-[tpt-press](../../README.md). Bases are coded with a context-mixing model, and
+[tpt-press](https://github.com/tpt-solutions/tpt-press/blob/master/README.md). Bases are coded with a context-mixing model, and
 records can be fetched by name without unpacking the rest of the file.
 
 Use it for sequencing data you keep and look up: reference genomes, assemblies,
@@ -140,11 +140,11 @@ Both coders are deterministic and checked by round-trip tests.
 | Index | Record and base totals, one entry per block, and a sorted name lookup |
 
 The layout is documented at the top of [`src/format.rs`](src/format.rs), and in
-full in [`docs/formats.md`](../../docs/formats.md#genomics-archive-tpgn-version-1).
+full in [`docs/formats.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/formats.md#genomics-archive-tpgn-version-1).
 
 ## Results
 
-From [`docs/benchmarks.md`](../../docs/benchmarks.md).
+From [`docs/benchmarks.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/benchmarks.md).
 
 On the E. coli K-12 MG1655 reference (`NC_000913.3`, 4.7 MB, one record), a real
 genome:
@@ -199,5 +199,5 @@ cargo run -p tpt-press-genomics --example fetch_record --release
 
 ## License
 
-Licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
-[MIT license](../../LICENSE-MIT), at your option.
+Licensed under either of [Apache License 2.0](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-APACHE) or
+[MIT license](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-MIT), at your option.

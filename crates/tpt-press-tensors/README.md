@@ -1,6 +1,6 @@
 # tpt-press-tensors
 
-Machine-learning model archives for [tpt-press](../../README.md). It reads
+Machine-learning model archives for [tpt-press](https://github.com/tpt-solutions/tpt-press/blob/master/README.md). It reads
 model weights from safetensors, GGUF, ONNX and PyTorch checkpoints, and packs
 them into a `.tptn` archive. Each tensor is split only at its own element
 boundaries, so a loader can read one tensor, or one piece of it, without
@@ -158,7 +158,7 @@ let bytes = archive.read_tensor("lm_head.weight").await?;
 | Index | Tensor names, dtypes, shapes, piece offsets and metadata, at the end of the file |
 
 The layout is documented at the top of [`src/format.rs`](src/format.rs), and
-summarised in [`docs/formats.md`](../../docs/formats.md#tensors-archive-tptn-version-1).
+summarised in [`docs/formats.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/formats.md#tensors-archive-tptn-version-1).
 
 The byte shuffle groups the bytes of each element by position, so the exponent
 bytes of bf16 weights sit together and compress well. Unpacking only has to
@@ -166,7 +166,7 @@ undo the shuffle.
 
 ## Results
 
-From [`docs/benchmarks.md`](../../docs/benchmarks.md). Single runs on one
+From [`docs/benchmarks.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/benchmarks.md). Single runs on one
 Windows 11 machine.
 
 | Input | Tool | Saved |
@@ -192,7 +192,7 @@ byte range in the original file. The two were identical.
 Property tests and hostile-input tests cover malformed input. Fuzz targets
 exist for the tensor reader (`tensors_read`), the PyTorch reader
 (`tensors_pytorch`) and the shard manifest (`tensors_manifest`), in
-[`fuzz/`](../../fuzz/).
+[`fuzz/`](https://github.com/tpt-solutions/tpt-press/tree/master/fuzz/).
 
 ## Limits and open work
 
@@ -227,5 +227,5 @@ cargo run -p tpt-press-tensors --features async --example async_read
 
 ## License
 
-Licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
-[MIT license](../../LICENSE-MIT), at your option.
+Licensed under either of [Apache License 2.0](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-APACHE) or
+[MIT license](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-MIT), at your option.

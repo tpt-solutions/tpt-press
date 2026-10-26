@@ -1,6 +1,6 @@
 # tpt-press-assets
 
-Game asset archives for [tpt-press](../../README.md). An archive packs many
+Game asset archives for [tpt-press](https://github.com/tpt-solutions/tpt-press/blob/master/README.md). An archive packs many
 named files into one `.tpa` file. Each asset is stored raw or compressed, and
 raw assets are page-aligned, so they can be read straight from a memory map
 without being copied.
@@ -110,7 +110,7 @@ Names are sorted in the index, and `get` binary-searches it.
 The index and footer are at the end of the file. Opening reads only the header,
 the footer and the index, so listing a large archive is cheap. The layout is
 documented at the top of [`src/format.rs`](src/format.rs), and summarised in
-[`docs/formats.md`](../../docs/formats.md#assets-archive-tpas-version-1).
+[`docs/formats.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/formats.md#assets-archive-tpas-version-1).
 
 ## Performance
 
@@ -129,7 +129,7 @@ slower, because each page of the map costs a fault. Reproduce it with
 ## Safety
 
 - The crate denies `unsafe` code except for one memory-mapping call in
-  `reader.rs`. That call is reviewed in [`docs/unsafe-review.md`](../../docs/unsafe-review.md).
+  `reader.rs`. That call is reviewed in [`docs/unsafe-review.md`](https://github.com/tpt-solutions/tpt-press/blob/master/docs/unsafe-review.md).
 - Every offset and length read from the index is checked against the file
   before it is used. A declared size is checked before any allocation.
 - A compressed asset may declare at most `MAX_COMPRESSED_ASSET_BYTES` (1 GiB).
@@ -148,7 +148,7 @@ tpt-press unpack-assets game.tpa out/                # restore the folder
 ```
 
 `pack-assets` takes `--level` for compressed assets. See the
-[CLI README](../tpt-press-cli/README.md).
+[CLI README](https://github.com/tpt-solutions/tpt-press/blob/master/crates/tpt-press-cli/README.md).
 
 ## Examples
 
@@ -165,5 +165,5 @@ cargo run -p tpt-press-assets --example pack_directory
 
 ## License
 
-Licensed under either of [Apache License 2.0](../../LICENSE-APACHE) or
-[MIT license](../../LICENSE-MIT), at your option.
+Licensed under either of [Apache License 2.0](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-APACHE) or
+[MIT license](https://github.com/tpt-solutions/tpt-press/blob/master/LICENSE-MIT), at your option.
