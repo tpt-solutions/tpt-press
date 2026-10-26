@@ -386,3 +386,20 @@ worst case for a VCF, so real files should do better.
 
 Small files grow. A two-record file takes 632 bytes, because each block has a
 fixed cost.
+
+## Logs dictionaries: shared against per-column (synthetic, single run)
+
+200,000-record generated log (19.8 MB), split into the same 256 KiB blocks the
+writer uses. Each column stream is compressed at zstd level 3, with no
+dictionary, with the one shared dictionary the writer uses, and with one
+dictionary per column. Each dictionary is trained on the first 10% of records.
+
+- no dictionary: 1,116,420 bytes
+- shared dictionary (current writer): 1,124,883 bytes (0.8% larger)
+- per-column dictionaries: 1,164,996 bytes (4.3% larger)
+
+Per-column dictionaries cost more than they save, and the shared one is slightly
+worse on this data. The values are random, which is the case where a dictionary
+cannot help. The writer's default is unchanged, and a real log may behave
+differently. The shared dictionary also costs 64 KiB per archive. Revisit with
+real logs before changing the default.
