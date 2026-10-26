@@ -8,9 +8,10 @@ Use it for sequencing data you keep and look up: reference genomes, assemblies,
 read sets. Pack once, then fetch one contig or one read, or a range inside it,
 and only the block that holds it is decoded.
 
-> **Status:** pre-0.1. Format version 1, which may change before 1.0. Its
-> context models are tuned on one real genome, and the FASTQ quality numbers
-> come from synthetic data. Nothing is published to crates.io yet.
+> **Status:** experimental. Format version 1, which may change before 1.0. The
+> layout has not been reviewed by a sequence-data specialist. Its context models
+> are tuned on one real genome, and the FASTQ quality numbers come from
+> synthetic data. Nothing is published to crates.io yet.
 
 ## Contents
 

@@ -10,8 +10,9 @@ Use it for arrays that are large and read in pieces: simulation output, sensor
 grids, image stacks, feature tables. It is for exact storage. It is not a lossy
 or error-bounded codec.
 
-> **Status:** pre-0.1. Format version 1, which may change before 1.0. Measured
-> on synthetic fields only, and the filters have not been tested on real
+> **Status:** experimental. Format version 1, which may change before 1.0. The
+> layout has not been reviewed by an array-data specialist. Measured on
+> synthetic fields only, and the filters have not been tested on real
 > scientific data. Nothing is published to crates.io yet.
 
 ## Contents

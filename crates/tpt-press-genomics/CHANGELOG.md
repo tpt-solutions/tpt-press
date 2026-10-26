@@ -7,11 +7,10 @@ the archive format may change between any two versions.
 ## [Unreleased]
 
 ### Added
+
 - VCF input (`pack` on a file starting with `#`). The header lines are kept verbatim,
   and the data columns are stored as streams. `unpack` rebuilds the file byte for
-  byte. `fetch` is refused on VCF archives. The writer no longer refuses VCF, and
-  the `vcf` feature from an earlier version is gone.
-
+  byte. `fetch` is refused on VCF archives.
 - `TPGN` archive format, version 1 (footer `TPGX`), for FASTA and FASTQ. The
   layout is documented in `docs/formats.md` and at the top of `src/format.rs`.
 - Lossless FASTA and FASTQ archives. Bases are coded with a context-mixing
@@ -31,3 +30,5 @@ the archive format may change between any two versions.
 - CLI: `pack-genomics`, `unpack-genomics` and `fetch-genomics` (with `--start`
   and `--end`). `inspect` detects the format.
 - Examples: `fasta_round_trip`, `fetch_record` and `fastq_round_trip`.
+- Experimental. The layout has not been reviewed by a sequence-data specialist,
+  and may change before 1.0.

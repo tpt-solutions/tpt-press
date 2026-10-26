@@ -27,7 +27,7 @@ archive formats may change between any two versions.
 - **Generic archives (`tpt-press-core`)**
   - Content-defined chunking (`pack --content-defined`), using a gear rolling hash.
   - Optional zstd dictionary, trained on the start of the input (`pack --dictionary BYTES`). Header flag bit 0.
-  - Passphrase encryption (age), and public-key encryption to X25519 recipients (`pack --recipient`, `--recipient-file`, `unpack --identity`, `keygen`).
+  - Passphrase encryption (`tpt-enc/v1`), and public-key encryption to X25519 recipients (`pack --recipient`, `--recipient-file`, `unpack --identity`, `keygen`).
   - Archive-wide output limit on unpack (`UnpackOptions::max_total_size`, `unpack --max-output`).
   - `ArchiveFormat` trait, implemented by each format's marker type.
   - `EncryptingWriter`, and `encrypt_with_passphrase` and `encrypt_for_recipients`, which encrypt as they write.
@@ -49,15 +49,18 @@ archive formats may change between any two versions.
   - `fetch` reads one record, or a 1-based inclusive range of it, by name. A sorted name lookup in the index points at the one block to read.
   - The parser refuses input it cannot return byte for byte, and names the line. This covers CRLF endings, a missing final newline, changing line widths, blank lines, and a FASTQ `+` line that is not bare or the id.
   - CLI: `pack-genomics`, `unpack-genomics`, `fetch-genomics`. `inspect` detects the format.
+  - Experimental. The layout has not been reviewed by a sequence-data specialist, and may change before 1.0.
 - **Arrays (`tpt-press-arrays`, new crate)**
   - Chunked storage for NumPy-style arrays (`TPAR`, version 1). Each chunk is stored with the smallest of seven lossless filters (none, byte shuffle, XOR and subtraction deltas along the last axis or the row above, and the Lorenzo predictor, each with shuffle) and then zstd.
   - `.npy` input keeps its original header, so unpacking gives back the file byte for byte. Raw input needs `--dtype` and `--shape`.
-  - `.npz` input with exactly one array is accepted. Files with several arrays are refused, since an archive holds one array.
+  - `.npz` input: one array gives a `TPAR` archive, and several give a `TPBN` bundle with one `TPAR` archive per member (`unpack-arrays --member`).
+  - Zarr v2 directory stores (C order, no filters, `null` and `zstd` compressors).
+  - Experimental. The layout has not been reviewed by an array-data specialist, and may change before 1.0.
   - `read_slice` reads a rectangular slice and decodes only the chunks it overlaps.
   - CLI: `pack-arrays`, `unpack-arrays`, `slice-arrays`. `inspect` detects the format.
 - **Logs: SQL (`tpt-press-logs`, feature `strata`)**
-  - `query --sql` runs SQL over the matching records, through tpt-strata. The result is a table named `logs`. Column types are inferred per column. Columns with no values are left out.
-  - tpt-strata is not on crates.io, so this feature takes it from git, pinned to a commit. See the note under *Publishing* in `TODO.md`.
+  - `query --sql` runs SQL over the matching records, through `tpt-strata` 0.1.0 from crates.io. The result is a table named `logs`. Column types are inferred per column. Columns with no values are left out.
+  - The engine accepts `OR`, `IN`, `BETWEEN` and `LIKE`, and refuses `CAST`, arithmetic and subqueries.
 - **Tests, examples and CI**
   - `tests/` is a workspace member (`tpt-press-tests`) with six cross-crate tests.
   - Examples: `tpt-press-cli/examples/make_logs_corpus.rs` (seeded log corpus for the benchmarks) and `tpt-press-cli/examples/compare_formats.rs` (zip and zstd sizes).

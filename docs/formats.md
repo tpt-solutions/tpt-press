@@ -12,6 +12,9 @@ checked on read, and a reader refuses versions it does not know.
 | Tensors | `TPTN` | `TPTX`       | 1       | `pack-tensors`                      |
 | Assets  | `TPAS` | `TPAX`       | 1       | `pack-assets`                       |
 | Datasets | `TPDS` | `TPDX`      | 1       | `import-dataset`                    |
+| Genomics | `TPGN` | `TPGX`      | 1       | `pack-genomics`                     |
+| Arrays  | `TPAR` | `TPRX`       | 1       | `pack-arrays`                       |
+| Bundle  | `TPBN` | see `bundle.rs` | 1    | `pack-arrays` on a multi-array `.npz` |
 
 The layouts below are the same as the module docs in each crate's `format.rs`,
 which are the reference if the two ever disagree.

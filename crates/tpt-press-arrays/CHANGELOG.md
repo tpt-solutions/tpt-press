@@ -15,6 +15,13 @@ the archive format may change between any two versions.
   the file byte for byte. `.npy` versions 1 to 3 are read.
 - `pack_raw`, for headerless input, with the dtype descriptor and shape given.
 - `.npz` files holding exactly one array are read from their `.npy` member.
+- `.npz` files holding several arrays are stored as a `TPBN` bundle, with one
+  complete `TPAR` archive per member. `read_member` and `bundle_members` read
+  them, and `unpack-arrays --member` writes one out.
+- Zarr v2 directory stores, through `pack_zarr`: C order, no filters, and the
+  `null` and `zstd` compressors. Blosc is refused by name.
+- Experimental. The layout has not been reviewed by an array-data specialist,
+  and may change before 1.0.
 - `read_slice`, which reads a rectangle and decodes only the chunks it overlaps.
   Each chunk is checked by CRC before it is decompressed.
 - Seven lossless filters: none, shuffle, XOR with shuffle, XOR with the row above
