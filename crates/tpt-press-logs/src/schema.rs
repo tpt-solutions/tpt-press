@@ -13,6 +13,9 @@ use crate::prometheus;
 
 const EMPTY: &[u8] = b"";
 
+/// One record: its `(column, cell)` pairs.
+pub type Record = Vec<(String, Vec<u8>)>;
+
 /// Knows how to read records of one archive's format.
 #[derive(Debug, Clone)]
 pub struct Schema {
@@ -69,7 +72,7 @@ impl Schema {
 
     /// Splits one line into its records, each as `(column, cell)` pairs. Most
     /// formats have one record per line. OTLP lines can hold several.
-    pub fn records(&self, line: &[u8]) -> Result<Vec<Vec<(String, Vec<u8>)>>> {
+    pub fn records(&self, line: &[u8]) -> Result<Vec<Record>> {
         if self.format != Format::Otlp {
             return Ok(vec![self.cells(line)?]);
         }

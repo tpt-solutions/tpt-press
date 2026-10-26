@@ -231,7 +231,9 @@ fn cell_equals(cell: Option<&[u8]>, expected: &str, json: bool) -> bool {
     }
     match serde_json::from_slice::<serde_json::Value>(cell) {
         Ok(serde_json::Value::String(text)) => text == expected,
-        Ok(value) => value.to_string() == expected,
+        Ok(value) => {
+            serde_json::from_str::<serde_json::Value>(expected).is_ok_and(|parsed| parsed == value)
+        }
         Err(_) => false,
     }
 }
