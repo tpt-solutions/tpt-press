@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 crc32fast = "1.5.2"
-zip = { version = "2.4.2", default-features = false }
+zip = { version = "9.1.1", default-features = false }
 tokio = { version = "1.53.2", default-features = false, features = ["io-util"], optional = true }
 serde_json = "1.0.154"
 thiserror = "2.0.21"

@@ -89,11 +89,13 @@ fn zip_error(e: zip::result::ZipError) -> Error {
 /// The `data.pkl` entry. Its directory prefix is the checkpoint's archive name,
 /// so it can be anything, and the entry must be unique.
 fn find_pickle<R: Read + Seek>(zip: &ZipArchive<R>) -> Result<String> {
-    let mut found: Vec<String> = zip
-        .file_names()
-        .filter(|name| *name == "data.pkl" || name.ends_with("/data.pkl"))
-        .map(str::to_owned)
-        .collect();
+    let mut found: Vec<String> = Vec::new();
+    for name in zip.file_names() {
+        let name = name.map_err(zip_error)?;
+        if name == "data.pkl" || name.ends_with("/data.pkl") {
+            found.push(name.into_owned());
+        }
+    }
     match found.len() {
         0 => Err(invalid("no data.pkl entry")),
         1 => Ok(found.remove(0)),
@@ -126,7 +128,10 @@ fn storage_location<R: Read + Seek>(
             "storage `{key}` is compressed, and only uncompressed storages can be packed in place"
         )));
     }
-    Ok((entry.data_start(), entry.size()))
+    let start = entry
+        .data_start()
+        .ok_or_else(|| invalid(format!("storage `{key}` has no data offset")))?;
+    Ok((start, entry.size()))
 }
 
 /// Flattens the state dict into named tensors. Nested dicts get dotted names.

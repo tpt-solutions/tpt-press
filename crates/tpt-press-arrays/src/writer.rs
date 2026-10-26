@@ -271,11 +271,15 @@ pub fn pack_npz<R: Read, W: Write>(
             message: format!("not a valid .npz file: {e}"),
         }
     })?;
-    let members: Vec<String> = zip
-        .file_names()
-        .filter(|name| name.ends_with(".npy"))
-        .map(str::to_owned)
-        .collect();
+    let mut members: Vec<String> = Vec::new();
+    for name in zip.file_names() {
+        let name = name.map_err(|e| Error::Format {
+            message: format!("not a valid .npz file: {e}"),
+        })?;
+        if name.ends_with(".npy") {
+            members.push(name.into_owned());
+        }
+    }
     if members.is_empty() {
         return Err(Error::Format {
             message: "the .npz file holds no arrays".to_owned(),

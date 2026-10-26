@@ -40,6 +40,6 @@ strata = ["tpt-press-logs/strata", "dep:tpt-strata"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
-zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.1", default-features = false, features = ["deflate"] }
 # Reference compressor for `examples/compare_formats.rs`.
 zstd = "0.14.2"

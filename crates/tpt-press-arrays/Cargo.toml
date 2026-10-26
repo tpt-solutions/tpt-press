@@ -19,7 +19,7 @@ workspace = true
 crc32fast = "1.5.2"
 thiserror = "2.0.21"
 tpt-press-core = { path = "../tpt-press-core", version = "0.1.0" }
-zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+zip = { version = "9.1.1", default-features = false, features = ["deflate"] }
 serde_json = "1.0.154"
 
 [dev-dependencies]
